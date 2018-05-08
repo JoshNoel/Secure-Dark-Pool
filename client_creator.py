@@ -3,6 +3,8 @@ from phe import paillier
 from Crypto.PublicKey.RSA import construct
 import xmlrpc.client as xmlrpclib
 
+SERVER_ADDR = "http://localhost"
+SERVER_RPC_PORT = 8000
 
 class Client():
     def __init__(self, lambda_bits):
@@ -13,7 +15,7 @@ class Client():
         self.e, self.d = k.calculate_keys(self.p, self.q)
         self.n = self.p * self.q
 
-        self.proxy = xmlrpclib.ServerProxy("http://localhost:8000/")
+        self.proxy = xmlrpclib.ServerProxy(SERVER_ADDR + ":"+ SERVER_RPC_PORT)
 
         self.i = None
 
