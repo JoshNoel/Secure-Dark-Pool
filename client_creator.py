@@ -4,6 +4,8 @@ from Crypto.PublicKey.RSA import construct
 import xmlrpc.client as xmlrpclib
 import pool_types
 import socket
+import sys
+import json
 
 class Client():
     def __init__(self, lambda_bits, server_addr, server_rpc_port):
@@ -14,7 +16,7 @@ class Client():
         self.e, self.d = k.calculate_keys(self.p, self.q)
         self.n = self.p * self.q
 
-        self.proxy = xmlrpclib.ServerProxy(server_addr + ":"+ server_rpc_port)
+        self.proxy = xmlrpclib.ServerProxy(server_addr + ":"+ str(server_rpc_port))
         self.server_addr = server_addr
         self.sock = None
 
@@ -29,7 +31,8 @@ class Client():
         return self.proxy.query_keys()
 
     def register(self):
-        self.i, self.server_port, self.ticker_map = self.proxy.register((self.e, self.n))
+        # Need to send integers > 64-bits as strings
+        self.i, self.server_port, self.ticker_map = self.proxy.register(json.dumps((self.e, self.n)).encode('utf-8'))
         if self.i < 0:
             print(auth_geterror(self.i))
 
@@ -37,6 +40,8 @@ class Client():
         while (not isinstance(self.pub_keys, list)):
             thread.sleep(5)
             self.pub_keys = self.proxy.query_pub_keys()
+
+        print("Public Keys: " + str(self.pub_keys))
     
         # Initialize socket connection
         self.sock = socket.socket()

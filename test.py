@@ -1,13 +1,15 @@
 from authority import Server
-import client_creator
+from client_creator import Client
 import multiprocessing as mp
 
 SERVER_ADDR = "http://localhost"
 SERVER_NAME = "localhost"
 SERVER_RPC_PORT = 8000
 
+LAMBDA_BITS = 16
+
 def run_client(test):
-        client = Client(SERVER_ADDR, SERVER_RPC_PORT)
+        client = Client(LAMBDA_BITS, SERVER_ADDR, SERVER_RPC_PORT)
 
         client.register()
         client.run_test_case(test)
@@ -19,7 +21,7 @@ def run_server():
 if __name__ == "__main__":
     ctx = mp.get_context('spawn')
     print("Instantiating Server")
-    p_server = ctx.Process(name="CA Server", target=run_server, daemon=True)
+    p_server = ctx.Process(name="CA Server", target=run_server, daemon=False)
     p_server.start()
 
     print("Instantiating Clients")
@@ -29,6 +31,9 @@ if __name__ == "__main__":
     print("Running Registration Test")
     client_1.start()
     client_2.start()
+    client_1.join()
+    client_2.join()
+    p_server.join()
 
     print("Testing Key Exchange...")
 

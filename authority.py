@@ -8,6 +8,7 @@ import time
 import random
 import itertools
 import pool_types
+import json
 
 AVAIL_PORTS = range(8001, 8010)
 REGISTRATION_PERIOD_LEN = 15    # Time on key-refresh where new clients can join pool
@@ -150,6 +151,7 @@ class KeyStore:
         """
         Adds RSA public key to the store. Returns random id for key
         """
+        # FIXME: Need to expand client id space
         i = random.randint()
         self._rsa_keys[i] = key
         return i
@@ -250,6 +252,7 @@ class CentralAuthority:
         RSA public keys they should generate pallier keys for. Server only starts client handlers once registration period is over.
         Returns: Client uid, assigned port, ticker mapping. Check client_uid >= 0 for error code
         """
+        pub_key = json.loads(pub_key.decode('utf-8'))
         if len(self.open_ports) == 0:
             return AUTH_POOL_FULL, -1, -1
         if not start_clients_thread.is_alive():
