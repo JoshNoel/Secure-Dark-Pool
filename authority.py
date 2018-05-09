@@ -1,5 +1,5 @@
 #!/bin/python3 from xmlrpc.server import SimpleXMLRPCServer
-from xmlrpc.server import SimpleXMLRPCRequestHandler
+from xmlrpc.server import SimpleXMLRPCRequestHandler, SimpleXMLRPCServer
 from random import shuffle
 import threading
 import socket
@@ -7,18 +7,11 @@ import multiprocessing as mp
 import time
 import random
 import itertools
+import pool_types
 
 AVAIL_PORTS = range(8001, 8010)
 REGISTRATION_PERIOD_LEN = 15    # Time on key-refresh where new clients can join pool
 KEY_REFRESH_INTERVAL = 300      # Length of single key-cycle
-
-#Export these error codes
-AUTH_SUCESS = 0
-AUTH_UNMATCHED_TRADE = -1
-AUTH_INVALID_ARG_ERR = -2
-AUTH_INVALID_METHOD_ERR = -3
-AUTH_POOL_FULL = -4
-AUTH_OUTSIDE_REG_PERIOD = -5
 
 # Structure definitions
 #   outstanding_trade: (offering_client_id, pallier_ciphers)
@@ -147,7 +140,7 @@ class ClientHandler:
             else:
                 res = bytes(AUTH_INVALID_METHOD_ERR)
 
-            sock_client.send(res)
+            sock_client.send(json.dumps(res).encode('utf-8'))
 
 class KeyStore:
     def __init__(self):
@@ -289,7 +282,10 @@ class CentralAuthority:
         """
         Returns all current public keys in key store
         """
-        return self.key_store.get_key_list()
+        if reg_done:
+            return self.key_store.get_key_list()
+        else:
+            return AUTH_IN_REG_PERIOD
 
     
     def _dispatch(self, method, params):
@@ -306,12 +302,12 @@ class CentralAuthority:
         else:
             return AUTH_INVALID_METHOD_ERR
 
-# Create server
-if __name__ == "__main__":
-    server = SimpleXMLRPCServer(("localhost", 8000), requestHandler=CentralAuthority)
-    server.register_introspection_functions()
+class Server:
+    def __init__(self, name, port):
+        self.server = SimpleXMLRPCServer((name, port), requestHandler=CentralAuthority)
+        self.server.register_introspection_functions()
 
-    server.register_instance(CentralAuthority())
-
-    # Run the server's main loop
-    server.serve_forever()
+        self.server.register_instance(CentralAuthority())
+    def run():
+        # Run the server's main loop
+        self.server.serve_forever()
