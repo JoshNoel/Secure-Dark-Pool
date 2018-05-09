@@ -6,25 +6,29 @@ SERVER_ADDR = "http://localhost"
 SERVER_NAME = "localhost"
 SERVER_RPC_PORT = 8000
 
-def run_client_test(client, test):
-    client.register()
-    client.run_test_case(test)
+def run_client(test):
+        client = Client(SERVER_ADDR, SERVER_RPC_PORT)
 
+        client.register()
+        client.run_test_case(test)
 
-if __name__ == "__main__":
-    print("Instantiating Server")
+def run_server():
     server = Server(SERVER_NAME, SERVER_RPC_PORT)
     server.run()
 
+if __name__ == "__main__":
+    ctx = mp.get_context('spawn')
+    print("Instantiating Server")
+    p_server = ctx.Process(name="CA Server", target=run_server, daemon=True)
+    p_server.start()
+
     print("Instantiating Clients")
-    client_1 = Client(SERVER_ADDR, SERVER_RPC_PORT)
-    client_2 = Client(SERVER_ADDR, SERVER_RPC_PORT)
+    client_1 = ctx.Process(name="Client 1", target=run_client, args=(None,), daemon=True)
+    client_2 = ctx.Process(name="Client 2", target=run_client, args=(None,), daemon=True)
 
     print("Running Registration Test")
-    p_client_1 = mp.Process(target=run_client_test, args=(client_1, None))
-    p_client_2 = mp.Process(target=run_client_test, args=(client_2, None))
-    p_client_1.start()
-    p_client_2.start()
+    client_1.start()
+    client_2.start()
 
     print("Testing Key Exchange...")
 
