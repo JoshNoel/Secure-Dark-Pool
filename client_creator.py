@@ -7,6 +7,8 @@ import socket
 import sys
 import json
 import time
+import collections
+import ast
 
 class Client():
     def __init__(self, lambda_bits, server_name, server_rpc_port):
@@ -34,13 +36,15 @@ class Client():
     def send_message(self, msg):
         assert isinstance(msg, dict)
         assert 'method' in msg and 'params' in msg
-        assert type(msg['method']) == str
-
+        assert type(msg['method']) == str 
+       
+        print("CLIENT: Sending Message - " + str(msg))
         send_msg = json.dumps(msg).encode('utf-8')
         self.sock.send(send_msg)
 
         resp = json.loads(self.sock.recv(4096).decode('utf-8'))
-        if resp in AUTH_ERRORS and resp != AUTH_SUCCESS:
+        print("CLIENT: Recieved Response - " + str(resp))
+        if isinstance(resp, collections.Hashable) and resp in AUTH_ERRORS and resp != AUTH_SUCCESS:
             raise RuntimeError("CLIENT: Recieved Error - " + auth_geterror(resp))
 
         return resp
@@ -79,10 +83,13 @@ class Client():
         # Query pallier keys, Server blocks until all clients have posted
         query_pall_keys = {'method': 'query_pall_keys', 'params': []}
         serv_pall_keys = self.send_message(query_pall_keys)
+        # Convert string public keys back to tuples
+        serv_pall_keys = {ast.literal_eval(k): v for k,v in serv_pall_keys.items()}
 
         # serv_pall_keys = json.loads(self.sock.recv(1024).decode('utf-8'))
-        self.pall_keys.update(serv_pall_keys)
-
+        self.update_pall_keys(serv_pall_keys)
+        print("CLIENT: Pallier keys updated - " + str(self.pall_keys))
+        
     def generate_pal(self, pub_keys):
         res = {}
         for j in range(len(pub_keys)):
@@ -103,10 +110,34 @@ class Client():
             # Save unencrypted pallier keys tagged with public key of other user
             self.pall_keys[pub_keys[j]] = (pal_pub_ij, pal_priv_ij)
             #output pal_priv_ij_encrypt
-            res[pub_keys[j]] = (pal_pub_str, pal_priv_ij_encrypt)
+            res[str(pub_keys[j])] = (pal_pub_str, pal_priv_ij_encrypt)
         return res
 
-        
+    
+    def update_pall_keys(self, pall_keys):
+        """
+        Updates local pallier key dict given encrypted pallier key dictionary mapping {user_pub_key: (PALL_PK,
+        ENC(PALL_SK))} where ENC uses the current user's secret key
+        """
+        for pub_key, pair in pall_keys.items():
+            privkey = construct((self.n, self.e, self.d))
+            pair[0] = ast.literal_eval(pair[0])
+            n = pair[0][1]
+            g = pair[0][0]
+            pall_pub = paillier.PaillierPublicKey(n)
+            pall_pub.g = g
+          
+            print("CLIENT: Test - " + str(pair[1]))
+            priv_data = privkey.decrypt(pair[1]).decode('utf-8')
+            p = priv_data[0]
+            q = priv_data[1]
+
+            pall_priv = paillier.PaillierPrivateKey(pall_pub, p, q)
+
+            print("CLIENT: Test - " + str(pall_pub), str(pall_priv))
+
+            self.pall_keys[pub_key] = (pall_pub, pall_priv)
+
     def run_test_case(self, trades):
         """
         In the future will load trades dictionary in order to simulate trades
