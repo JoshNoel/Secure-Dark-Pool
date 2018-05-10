@@ -9,7 +9,7 @@ SERVER_RPC_PORT = 8000
 LAMBDA_BITS = 16
 
 def run_client(test):
-        client = Client(LAMBDA_BITS, SERVER_ADDR, SERVER_RPC_PORT)
+        client = Client(LAMBDA_BITS, SERVER_NAME, SERVER_RPC_PORT)
 
         client.register()
         client.run_test_case(test)
