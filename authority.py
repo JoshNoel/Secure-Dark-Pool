@@ -256,7 +256,7 @@ class CentralAuthority:
             pub_key = info[1]
             q = mp.Queue()
             # Launches client handler process. daemon=True means client handlers are killed when server process is
-            ctx.Process(target=ClientHandler.process_requests, args=(self.server_name, client_id, 
+            ctx.Process(target=ClientHandler.process_requests, name="pool_client", args=(self.server_name, client_id, 
                         pub_key, assigned_port, q, self.cur_trades, self.key_store.num_keys, 
                         self.start_event, self.pall_key_gen[client_id], self.pall_key_cntr,
                         self.pall_key_lock, self.pall_keys), daemon=True).start()
@@ -334,8 +334,6 @@ class CentralAuthority:
             return self.query_refresh_interval()
         elif method == 'query_pub_keys':
             return self.query_pub_keys()
-        elif method == 'query_pall_pairs':
-            return self.query_pall_pairs(*params)
         else:
             return AUTH_INVALID_METHOD_ERR
 

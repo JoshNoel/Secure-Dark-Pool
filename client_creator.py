@@ -9,6 +9,8 @@ import json
 import time
 import collections
 import ast
+import base64
+import pickle
 
 class Client():
     def __init__(self, lambda_bits, server_name, server_rpc_port):
@@ -51,14 +53,16 @@ class Client():
 
     def register(self):
         # Need to send integers > 64-bits as strings
-        self.i, self.server_port, self.ticker_map = self.proxy.register(json.dumps((self.e, self.n)))
+        self.i, self.server_port, self.ticker_map = self.proxy.register(json.dumps((self.n, self.e)))
         if self.i < 0:
             raise RuntimeError(auth_geterror(self.i))
 
         # Get public key list from server
-        while (not isinstance(self.pub_keys, list)):
+        while self.pub_keys is None:
             time.sleep(5)
-            self.pub_keys = json.loads(self.proxy.query_pub_keys())
+            query_pub_res = self.proxy.query_pub_keys()
+            if query_pub_res != AUTH_IN_REG_PERIOD:
+                self.pub_keys = json.loads(query_pub_res)
 
         print("CLIENT: pub_keys = " + str(self.pub_keys))
     
@@ -96,15 +100,18 @@ class Client():
             p_prime, q_prime = k.find_p_q(self.lb)
             pal_pub_ij, pal_priv_ij = paillier.generate_paillier_keypair()
 
-            j_public_e = pub_keys[j][0]
-            j_public_n = pub_keys[j][1]
+            j_public_e = pub_keys[j][1]
+            j_public_n = pub_keys[j][0]
 
             pubkey = construct(pub_keys[j])
             #convert priv_ij to binary (encrypt (p,q) and then rebuild private key on decryption
             #convert pub_ij to binary. Send (g,n) and then rebuild public key on decryption
 
-            private_bytes = json.dumps((pal_priv_ij.p, pal_priv_ij.q)).encode('utf-8')
-            pal_priv_ij_encrypt = str(pubkey.encrypt(private_bytes, None))
+            private_bytes = pickle.dumps((pal_priv_ij.p, pal_priv_ij.q))
+            print("DEBUG - private_bytes = " + str(private_bytes))
+            print("DEBUG - size = " + str(len(private_bytes)))
+            print("DEBUG - ({}, p: {}, q: {}, n: {}".format(j, pal_priv_ij.p, pal_priv_ij.q, pal_pub_ij.n))
+            pal_priv_ij_encrypt = base64.encodestring(pubkey.encrypt(private_bytes, None)[0]).decode('ascii')
             pal_pub_str = str((pal_pub_ij.g, pal_pub_ij.n))
 
             # Save unencrypted pallier keys tagged with public key of other user
@@ -122,16 +129,18 @@ class Client():
         for pub_key, pair in pall_keys.items():
             privkey = construct((self.n, self.e, self.d))
             pair[0] = ast.literal_eval(pair[0])
-            n = pair[0][1]
             g = pair[0][0]
+            n = pair[0][1]
             pall_pub = paillier.PaillierPublicKey(n)
             pall_pub.g = g
-          
-            print("CLIENT: Test - " + str(pair[1]))
-            priv_data = privkey.decrypt(pair[1]).decode('utf-8')
+            
+            print("DEBUG - " + str(pair))
+            priv_data = pickle.loads(privkey.decrypt(base64.decodestring(pair[1].encode('ascii'))))
+            print("DEBUG - " + str(priv_data))
             p = priv_data[0]
             q = priv_data[1]
 
+            print("DEBUG - (p: {}, q: {}, n: {}".format(p, q, n))
             pall_priv = paillier.PaillierPrivateKey(pall_pub, p, q)
 
             print("CLIENT: Test - " + str(pall_pub), str(pall_priv))

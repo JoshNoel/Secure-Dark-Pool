@@ -21,19 +21,19 @@ def run_server():
 if __name__ == "__main__":
     ctx = mp.get_context('spawn')
     print("Instantiating Server")
-    p_server = ctx.Process(name="CA Server", target=run_server, daemon=False)
+    p_server = ctx.Process(name="pool_server", target=run_server, daemon=False)
     p_server.start()
 
     print("Instantiating Clients")
-    client_1 = ctx.Process(name="Client 1", target=run_client, args=(None,), daemon=True)
-    client_2 = ctx.Process(name="Client 2", target=run_client, args=(None,), daemon=True)
+    client_1 = ctx.Process(name="poll_rpc_client", target=run_client, args=(None,), daemon=True)
+    client_2 = ctx.Process(name="pool_rpc_client", target=run_client, args=(None,), daemon=True)
 
     print("Running Registration Test")
     client_1.start()
     client_2.start()
     client_1.join()
     client_2.join()
-    p_server.join()
+    p_server.terminate()
 
     print("Testing Key Exchange...")
 
