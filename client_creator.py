@@ -35,13 +35,26 @@ class Client():
         self.pall_keys = {}
 
     def kill(self):
-        if self.sock is not None:
-            self.sock.close()
+        try:
+            self.proxy.kill_client()
+            if self.sock is not None:
+                self.sock.close()
+        except xmlrpclib.Fault as e:
+            # ignore if server RPC kills itself
+            pass
 
     def get_keys(self):
         return self.proxy.query_keys()
 
-    def send_message(self, msg):
+    def send_message(self, msg, filter_trade_data=True):
+        """
+        Sends message to server through socket.
+        Message format: {'method': ClientHandler_method_name, 'params': [...]}
+        filter_trade_data: If false, method will not filter out trade data responses. For use when
+        sending trade messages.
+        Note that trade responses may come over socket in this time, but they will be filtered out.
+        Returns: Response to sent message as server always sends response
+        """
         assert isinstance(msg, dict)
         assert 'method' in msg and 'params' in msg
         assert type(msg['method']) == str 
@@ -49,12 +62,23 @@ class Client():
         print("CLIENT: Sending Message - " + str(msg))
         send_msg = pickle.dumps(msg)
         self.sock.send(send_msg)
+       
+        # Filters out trade responses received over socket
+        message_resp_parsed = False
+        while (not message_resp_parsed):
+            resp = pickle.loads(self.sock.recv(4096))
+            print("CLIENT: Recieved Response - " + str(resp))
 
-        resp = pickle.loads(self.sock.recv(4096))
-        print("CLIENT: Recieved Response - " + str(resp))
-        if isinstance(resp, collections.Hashable) and resp in AUTH_ERRORS and resp != AUTH_SUCCESS:
-            raise RuntimeError("CLIENT: Recieved Error - " + auth_geterror(resp))
+            # Check if error received
+            if isinstance(resp, collections.Hashable) and resp in AUTH_ERRORS and resp != AUTH_SUCCESS:
+                raise RuntimeError("CLIENT: Recieved Error - " + auth_geterror(resp))
 
+            # Check if this is a response to outstanding trade
+            if filter_trade_data and isinstance(resp, dict) and 'trade_data' in resp:
+                self.parse_trade_resp(resp)
+                continue
+
+            message_resp_parsed = True
         return resp
 
     def register(self):
@@ -176,11 +200,23 @@ class Client():
 
             self.pall_keys[pub_key] = (pall_pub, pall_priv)
 
+    def send_trade(self, trade):
+        """
+        Sends trade to server through list of paillier encrypted ciphertexts for every other
+        client in the network.
+        """
+        ticker_encoding = self.ticker_map[trade
+        msg = {'method': 'post_trade', 'params': [[ciphers]]}
+
+    def parse_trade_resp(self, resp):
+
     def run_test_case(self, trades):
         """
-        In the future will load trades dictionary in order to simulate trades
+        Loads list of trades in order to simulate trades.
+        trades := [(Ticker, amt), ...]
         """
         # Do trades
-        return True
-
-
+        TEST_TIMEOUT_INT = 5
+        for trade in trades:
+            self.send_trade(trade)
+            time.sleep(TEST_TIMEOUT_INT)

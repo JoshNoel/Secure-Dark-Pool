@@ -2,6 +2,7 @@ from authority import Server
 from client_creator import Client
 import multiprocessing as mp
 import json
+import os
 
 SERVER_ADDR = "http://localhost"
 SERVER_NAME = "localhost"
@@ -15,15 +16,19 @@ LAMBDA_BITS = 1536
 def run_client(test_file):
     client = Client(LAMBDA_BITS, SERVER_NAME, SERVER_RPC_PORT)
 
-    if not client.register():
+    try:
+        client.register()
+    except Exception as e:
         client.kill()
         return -1
+
     test = None
     with open('test_cases/'+test_file) as f:
         test = json.load(f)
-    
+
     # TODO: Check file format
     client.run_test_case(test)
+
     client.kill()
     return 0
 
@@ -38,15 +43,14 @@ if __name__ == "__main__":
     p_server.start()
 
     print("Instantiating Clients")
-    client_1 = ctx.Process(name="poll_rpc_client", target=run_client, args=(None,), daemon=True)
-    client_2 = ctx.Process(name="pool_rpc_client", target=run_client, args=(None,), daemon=True)
+    client_1 = ctx.Process(name="poll_rpc_client1", target=run_client, args=('trades_1_1.json',), daemon=True)
+    client_2 = ctx.Process(name="pool_rpc_client2", target=run_client, args=('trades_1_2.json',), daemon=True)
 
     print("Running Registration Test")
     client_1.start()
     client_2.start()
     client_1.join()
     client_2.join()
-    p_server.terminate()
 
     print("Testing Key Exchange...")
 
