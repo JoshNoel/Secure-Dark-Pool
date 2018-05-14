@@ -34,6 +34,10 @@ class Client():
         self.pub_keys = None
         self.pall_keys = {}
 
+    def kill(self):
+        if self.sock is not None:
+            self.sock.close()
+
     def get_keys(self):
         return self.proxy.query_keys()
 
@@ -43,10 +47,10 @@ class Client():
         assert type(msg['method']) == str 
        
         print("CLIENT: Sending Message - " + str(msg))
-        send_msg = json.dumps(msg).encode('utf-8')
+        send_msg = pickle.dumps(msg)
         self.sock.send(send_msg)
 
-        resp = json.loads(self.sock.recv(4096).decode('utf-8'))
+        resp = pickle.loads(self.sock.recv(4096))
         print("CLIENT: Recieved Response - " + str(resp))
         if isinstance(resp, collections.Hashable) and resp in AUTH_ERRORS and resp != AUTH_SUCCESS:
             raise RuntimeError("CLIENT: Recieved Error - " + auth_geterror(resp))
@@ -55,7 +59,7 @@ class Client():
 
     def register(self):
         # Need to send integers > 64-bits as strings
-        self.i, self.server_port, self.ticker_map = self.proxy.register(json.dumps((self.rsa_pub.publickey().n,
+        self.i, self.server_port, self.ticker_map = self.proxy.register(pickle.dumps((self.rsa_pub.publickey().n,
                                                                         self.rsa_pub.publickey().e)))
         if self.i < 0:
             raise RuntimeError(auth_geterror(self.i))
@@ -65,7 +69,7 @@ class Client():
             time.sleep(5)
             query_pub_res = self.proxy.query_pub_keys()
             if query_pub_res != AUTH_IN_REG_PERIOD:
-                res = json.loads(query_pub_res)
+                res = pickle.loads(query_pub_res.data)
                 self.pub_keys = []
                 for keydata in res:
                     self.pub_keys.append(keydata)
@@ -80,7 +84,7 @@ class Client():
         print("Client Connected")
 
         # On connection server sends the public keys to generate pallier pairs for
-        gen_pall_msg = json.loads(self.sock.recv(1024).decode('utf-8'))
+        gen_pall_msg = pickle.loads(self.sock.recv(4096))
         print("CLIENT: Pallier Gen Message Recv - " + str(gen_pall_msg))
         gen_pall_key_list = [tuple(l) for l in gen_pall_msg['params']]
         enc_pall_keys = self.generate_pal(gen_pall_key_list)
@@ -111,18 +115,22 @@ class Client():
 
             print("DEBUG - pub_key = " + str((pub_keys[j])))
             pubkey = construct(tuple(pub_keys[j]))
+            cipher = PKCS1_OAEP.new(pubkey)
             #convert priv_ij to binary (encrypt (p,q) and then rebuild private key on decryption
             #convert pub_ij to binary. Send (g,n) and then rebuild public key on decryption
 
-            private_bytes = str((pal_priv_ij.p, pal_priv_ij.q)).encode('utf-8')
+            private_p = pickle.dumps(pal_priv_ij.p)
+            private_q = pickle.dumps(pal_priv_ij.q)
+            #private_bytes = pickle.dumps((pal_priv_ij.p, pal_priv_ij.q))
             print("DEBUG - ({}, p: {}, q: {}, n: {}".format(j, pal_priv_ij.p, pal_priv_ij.q, pal_pub_ij.n))
-            ciphertext = pubkey.encrypt(private_bytes, None)[0]
-            print("DEBUG - private_bytes = " + str(private_bytes))
-            print("DEBUG - ciphertext = " + str(ciphertext))
+            #print("DEBUG - private_bytes ({}) = {}".format(len(private_bytes), private_bytes))
+            print("DEBUG - private_p ({}) = {}".format(len(private_p), private_p))
+            print("DEBUG - private_q ({}) = {}".format(len(private_q), private_q))
+            ciphertext_p = cipher.encrypt(private_p)
+            ciphertext_q = cipher.encrypt(private_q)
+            print("DEBUG - ciphertexts = " + str((ciphertext_p, ciphertext_q)))
             print("DEBUG - key_size = " + str(pubkey.size()))
-            print("DEBUG - obj_size = " + str(len(private_bytes)))
-           # pal_priv_ij_encrypt = base64.encodestring(ciphertext).decode('ascii')
-            pal_priv_ij_encrypt = ciphertext
+            pal_priv_ij_encrypt = str((ciphertext_p, ciphertext_q))
             pal_pub_str = str((pal_pub_ij.g, pal_pub_ij.n))
 
             # Save unencrypted pallier keys tagged with public key of other user
@@ -138,25 +146,30 @@ class Client():
         ENC(PALL_SK))} where ENC uses the current user's secret key
         """
         for pub_key, pair in pall_keys.items():
-            pair[0] = ast.literal_eval(pair[0])
-            g = pair[0][0]
-            n = pair[0][1]
+            pub_key = ast.literal_eval(pair[0])
+            g = pub_key[0]
+            n = pub_key[1]
+            print("DEBUG: - {} = {}".format(type(n), n))
             pall_pub = paillier.PaillierPublicKey(n)
             pall_pub.g = g
             
             print("DEBUG - pub_key = " + str((self.rsa_priv.n, self.rsa_priv.e)))
             print("DEBUG - priv_key = " + str((self.rsa_priv.d)))
-            #ciphertext = base64.decodestring(pair[1].encode('ascii'))
-            ciphertext = pair[1]
-            print("DEBUG - ciphertext = " + str(ciphertext))
-            private_bytes = self.rsa_priv.decrypt(ciphertext).decode('utf-8')
-            print("DEBUG - private_bytes = " + str(private_bytes))
-            priv_data = ast.literal_eval(private_bytes)
-            print("DEBUG - " + str(priv_data))
-            p = priv_data[0]
-            q = priv_data[1]
+            cipher_data = ast.literal_eval(pair[1])
+            print("DEBUG - ciphertexts = " + str(cipher_data))
 
-            print("DEBUG - (p: {}, q: {}, n: {}".format(p, q, n))
+            cipher = PKCS1_OAEP.new(self.rsa_priv)
+            p = pickle.loads(cipher.decrypt(cipher_data[0]))
+            q = pickle.loads(cipher.decrypt(cipher_data[1]))
+
+            #print("DEBUG - private_p = " + str(private_p))
+            #print("DEBUG - private_q = " + str(private_q))
+            #priv_data = pickle.loads(private_bytes)
+            #print("DEBUG - " + str(priv_data))
+            #p = priv_data[0]
+            #q = priv_data[1]
+
+            print("DEBUG - (p: {},\n q: {},\n n: {}".format(p, q, n))
             pall_priv = paillier.PaillierPrivateKey(pall_pub, p, q)
 
             print("CLIENT: Test - " + str(pall_pub), str(pall_priv))

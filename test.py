@@ -1,19 +1,31 @@
 from authority import Server
 from client_creator import Client
 import multiprocessing as mp
+import json
 
 SERVER_ADDR = "http://localhost"
 SERVER_NAME = "localhost"
 SERVER_RPC_PORT = 8000
 
-# Sending Pallier keys takes 268 bits
-LAMBDA_BITS = 1024
+# Sending Pallier keys takes 136 bytes
+# RSA-OAESP needs 136+2+2*SHA1DigestSize lambda bits
+# lambda bits it multiple of 256 in this case at least 1536
+LAMBDA_BITS = 1536
 
-def run_client(test):
-        client = Client(LAMBDA_BITS, SERVER_NAME, SERVER_RPC_PORT)
+def run_client(test_file):
+    client = Client(LAMBDA_BITS, SERVER_NAME, SERVER_RPC_PORT)
 
-        client.register()
-        client.run_test_case(test)
+    if not client.register():
+        client.kill()
+        return -1
+    test = None
+    with open('test_cases/'+test_file) as f:
+        test = json.load(f)
+    
+    # TODO: Check file format
+    client.run_test_case(test)
+    client.kill()
+    return 0
 
 def run_server():
     server = Server(SERVER_NAME, SERVER_RPC_PORT)

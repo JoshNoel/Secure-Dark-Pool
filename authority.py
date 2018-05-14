@@ -10,6 +10,7 @@ import itertools
 from pool_types import *
 import json
 import ast
+import pickle
 
 AVAIL_PORTS = range(8001, 8010)
 REGISTRATION_PERIOD_LEN = 5    # Time on key-refresh where new clients can join pool
@@ -88,13 +89,20 @@ class ClientHandler:
         with this client
         """
         x = 0
+        wait_time = 0
+        sleep_time = 3
         with pall_lock:
             x = pall_cntr.value
 
-        while x > 0:
+        while x > 0 and wait_time < REGISTRATION_PERIOD_LEN:
             print("SERVER: Pall Cntr - " + str(x))
-            time.sleep(3)
+            time.sleep(sleep_time)
+            wait_time += sleep_time
             x = pall_cntr.value
+
+        if x == 0:
+            # Timeout before all keys pushed
+            return AUTH_QUERY_TIMEOUT
 
         print("SERVER: Returning pallier keys for - " + str(pub_key))
         return {str(k): v for k,v in pall_dict[pub_key].items()}
@@ -129,7 +137,7 @@ class ClientHandler:
         start_event.wait()
 
         msg_gen_pall = {'method': 'gen_pall', 'params': gen_pall_list}
-        sock_client.send(json.dumps(msg_gen_pall).encode('utf-8'))
+        sock_client.send(pickle.dumps(msg_gen_pall))
 
         # Now loop to accept trade requests
         while True:
@@ -142,7 +150,7 @@ class ClientHandler:
             b = sock_client.recv(4096)
             if b == b'':
                 continue
-            msg = json.loads(b.decode('utf-8'))
+            msg = pickle.loads(b)
             print("SERVER: Recieved Message - " + str(msg))
             method = msg['method']
             params = msg['params']
@@ -158,7 +166,7 @@ class ClientHandler:
             else:
                 res = AUTH_INVALID_METHOD_ERR
 
-            sock_client.send(json.dumps(res).encode('utf-8'))
+            sock_client.send(pickle.dumps(res))
 
 class KeyStore:
     def __init__(self):
@@ -221,6 +229,9 @@ class CentralAuthority:
         self.pall_key_cntr = self.manager.Value('i', 0, lock=False)
         self.pall_key_lock = mp.Lock()
 
+        self.active_procs = []
+        self.num_active_clients = 0
+
     def gen_pall_pairs(self):
         """
         For every client generates list of other clients for which it should generate their pallier pair.
@@ -256,10 +267,13 @@ class CentralAuthority:
             pub_key = info[1]
             q = mp.Queue()
             # Launches client handler process. daemon=True means client handlers are killed when server process is
-            ctx.Process(target=ClientHandler.process_requests, name="pool_client", args=(self.server_name, client_id, 
+            proc = ctx.Process(target=ClientHandler.process_requests, name="pool_client", args=(self.server_name, client_id, 
                         pub_key, assigned_port, q, self.cur_trades, self.key_store.num_keys, 
                         self.start_event, self.pall_key_gen[client_id], self.pall_key_cntr,
-                        self.pall_key_lock, self.pall_keys), daemon=True).start()
+                        self.pall_key_lock, self.pall_keys), daemon=True)
+            proc.start()
+            self.active_procs.append(proc)
+            self.num_active_clients += 1
 
 
     def key_refresh(self):
@@ -288,7 +302,7 @@ class CentralAuthority:
         RSA public keys they should generate pallier keys for. Server only starts client handlers once registration period is over.
         Returns: Client uid, assigned port, ticker mapping. Check client_uid >= 0 for error code
         """
-        pub_key = tuple(json.loads(pub_key))
+        pub_key = tuple(pickle.loads(pub_key.data))
         if len(self.open_ports) == 0:
             return AUTH_POOL_FULL, -1, -1
         if not self.start_clients_thread.is_alive():
@@ -319,12 +333,23 @@ class CentralAuthority:
         Returns all current public keys in key store
         """
         if self.reg_done:
-            x = json.dumps(self.key_store.get_rsa_list())
+            x = pickle.dumps(self.key_store.get_rsa_list())
             return x
         else:
             return AUTH_IN_REG_PERIOD
 
     
+    def kill_client(self):
+        self.active_clients -= 1
+        if self.active_clients == 0:
+            # Kill server
+            for proc in self.active_procs:
+                proc.terminate()
+            # Give processes time to die
+            thread.sleep(3)
+            sys.os.exit(0)
+            
+
     def _dispatch(self, method, params):
         if method == 'register':
             return self.register(*params)
@@ -334,6 +359,9 @@ class CentralAuthority:
             return self.query_refresh_interval()
         elif method == 'query_pub_keys':
             return self.query_pub_keys()
+        elif method == 'kill_client':
+            # Only logic is to kill server when no active clients
+            return self.kill_client()
         else:
             return AUTH_INVALID_METHOD_ERR
 
