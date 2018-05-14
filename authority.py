@@ -282,7 +282,7 @@ class CentralAuthority:
 
     def register(self, pub_key):
         """
-        Registers a new client with the central authority. pub_key := (RSA_PK, PALLIER_PK). Stored state is public key and it's corresponding unique ID.
+        Registers a new client with the central authority. pub_key := (RSA_PK, ENC(RSA_SK)). Stored state is public key and it's corresponding unique ID.
         After receipt of client_id and ticker mapping, client should query_keys until they are given complete RSA public key
         list (i.e. reg period is over). All clients then receive message from server after connecting containing list of
         RSA public keys they should generate pallier keys for. Server only starts client handlers once registration period is over.

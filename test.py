@@ -6,7 +6,8 @@ SERVER_ADDR = "http://localhost"
 SERVER_NAME = "localhost"
 SERVER_RPC_PORT = 8000
 
-LAMBDA_BITS = 16
+# Sending Pallier keys takes 268 bits
+LAMBDA_BITS = 1024
 
 def run_client(test):
         client = Client(LAMBDA_BITS, SERVER_NAME, SERVER_RPC_PORT)

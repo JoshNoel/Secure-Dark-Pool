@@ -1,6 +1,6 @@
-import rsa.key as k
 from phe import paillier
-from Crypto.PublicKey.RSA import construct
+from Crypto.PublicKey.RSA import generate, construct
+from Crypto.Cipher import PKCS1_OAEP
 import xmlrpc.client as xmlrpclib
 from pool_types import *
 import socket
@@ -17,10 +17,12 @@ class Client():
         self.lb = lambda_bits
 
         #generate secure RSA public/private key pairs
-        self.p, self.q = k.find_p_q(lambda_bits)
-        self.e, self.d = k.calculate_keys(self.p, self.q)
-        self.n = self.p * self.q
-
+        self.rsa_priv = generate(self.lb)
+        msg = ('test', 'rsa')
+        self.rsa_pub = self.rsa_priv.publickey()
+        c = self.rsa_pub.encrypt(pickle.dumps(msg), None)
+        out = self.rsa_priv.decrypt(c)
+        print("DEBUG - msg = {}, out = {}".format(msg, pickle.loads(out)))
         self.proxy = xmlrpclib.ServerProxy("http://" + server_name + ":"+ str(server_rpc_port))
         self.server_name = server_name
         self.sock = None
@@ -53,7 +55,8 @@ class Client():
 
     def register(self):
         # Need to send integers > 64-bits as strings
-        self.i, self.server_port, self.ticker_map = self.proxy.register(json.dumps((self.n, self.e)))
+        self.i, self.server_port, self.ticker_map = self.proxy.register(json.dumps((self.rsa_pub.publickey().n,
+                                                                        self.rsa_pub.publickey().e)))
         if self.i < 0:
             raise RuntimeError(auth_geterror(self.i))
 
@@ -62,10 +65,14 @@ class Client():
             time.sleep(5)
             query_pub_res = self.proxy.query_pub_keys()
             if query_pub_res != AUTH_IN_REG_PERIOD:
-                self.pub_keys = json.loads(query_pub_res)
+                res = json.loads(query_pub_res)
+                self.pub_keys = []
+                for keydata in res:
+                    self.pub_keys.append(keydata)
 
-        print("CLIENT: pub_keys = " + str(self.pub_keys))
-    
+        print("CLIENT: pub_keys = " + str(self.rsa_pub.n))
+        print("CLIENT: priv_d = " + str(self.rsa_priv.d))
+
         # Initialize socket connection
         self.sock = socket.socket()
         print("CLIENT: connecting to " + str(self.server_name))
@@ -97,21 +104,25 @@ class Client():
     def generate_pal(self, pub_keys):
         res = {}
         for j in range(len(pub_keys)):
-            p_prime, q_prime = k.find_p_q(self.lb)
             pal_pub_ij, pal_priv_ij = paillier.generate_paillier_keypair()
 
             j_public_e = pub_keys[j][1]
             j_public_n = pub_keys[j][0]
 
-            pubkey = construct(pub_keys[j])
+            print("DEBUG - pub_key = " + str((pub_keys[j])))
+            pubkey = construct(tuple(pub_keys[j]))
             #convert priv_ij to binary (encrypt (p,q) and then rebuild private key on decryption
             #convert pub_ij to binary. Send (g,n) and then rebuild public key on decryption
 
-            private_bytes = pickle.dumps((pal_priv_ij.p, pal_priv_ij.q))
-            print("DEBUG - private_bytes = " + str(private_bytes))
-            print("DEBUG - size = " + str(len(private_bytes)))
+            private_bytes = str((pal_priv_ij.p, pal_priv_ij.q)).encode('utf-8')
             print("DEBUG - ({}, p: {}, q: {}, n: {}".format(j, pal_priv_ij.p, pal_priv_ij.q, pal_pub_ij.n))
-            pal_priv_ij_encrypt = base64.encodestring(pubkey.encrypt(private_bytes, None)[0]).decode('ascii')
+            ciphertext = pubkey.encrypt(private_bytes, None)[0]
+            print("DEBUG - private_bytes = " + str(private_bytes))
+            print("DEBUG - ciphertext = " + str(ciphertext))
+            print("DEBUG - key_size = " + str(pubkey.size()))
+            print("DEBUG - obj_size = " + str(len(private_bytes)))
+           # pal_priv_ij_encrypt = base64.encodestring(ciphertext).decode('ascii')
+            pal_priv_ij_encrypt = ciphertext
             pal_pub_str = str((pal_pub_ij.g, pal_pub_ij.n))
 
             # Save unencrypted pallier keys tagged with public key of other user
@@ -127,15 +138,20 @@ class Client():
         ENC(PALL_SK))} where ENC uses the current user's secret key
         """
         for pub_key, pair in pall_keys.items():
-            privkey = construct((self.n, self.e, self.d))
             pair[0] = ast.literal_eval(pair[0])
             g = pair[0][0]
             n = pair[0][1]
             pall_pub = paillier.PaillierPublicKey(n)
             pall_pub.g = g
             
-            print("DEBUG - " + str(pair))
-            priv_data = pickle.loads(privkey.decrypt(base64.decodestring(pair[1].encode('ascii'))))
+            print("DEBUG - pub_key = " + str((self.rsa_priv.n, self.rsa_priv.e)))
+            print("DEBUG - priv_key = " + str((self.rsa_priv.d)))
+            #ciphertext = base64.decodestring(pair[1].encode('ascii'))
+            ciphertext = pair[1]
+            print("DEBUG - ciphertext = " + str(ciphertext))
+            private_bytes = self.rsa_priv.decrypt(ciphertext).decode('utf-8')
+            print("DEBUG - private_bytes = " + str(private_bytes))
+            priv_data = ast.literal_eval(private_bytes)
             print("DEBUG - " + str(priv_data))
             p = priv_data[0]
             q = priv_data[1]
