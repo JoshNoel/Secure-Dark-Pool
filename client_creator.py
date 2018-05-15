@@ -1,6 +1,7 @@
 from phe import paillier, encoding
 from Crypto.PublicKey.RSA import generate, construct
 from Crypto.Cipher import PKCS1_OAEP
+from Crypto.Random import random
 import xmlrpc.client as xmlrpclib
 from pool_types import *
 import socket
@@ -29,7 +30,7 @@ class Client():
 
         self.pub_keys = None
         self.pall_keys = {}
-        self.waiting_trades = set()
+        self.waiting_trades = {}
 
     def kill(self):
         try:
@@ -155,7 +156,7 @@ class Client():
             # Save unencrypted pallier keys tagged with public key of other user
             self.pall_keys[pub_keys[j]] = (pal_pub_ij, pal_priv_ij)
             #output pal_priv_ij_encrypt
-            res[str(pub_keys[j])] = (pal_pub_str, pal_priv_ij_encrypt)
+            res[str(pub_keys[j])] = (pal_pub_ij, pal_priv_ij_encrypt)
         return res
 
     
@@ -167,17 +168,16 @@ class Client():
         for rsa_pub, pair in pall_keys.items():
             if rsa_pub in self.pall_keys:
                 continue
-            pub_key = ast.literal_eval(pair[0])
-            g = pub_key[0]
-            n = pub_key[1]
-            print("DEBUG: - {} = {}".format(type(n), n))
-            pall_pub = paillier.PaillierPublicKey(n)
-            pall_pub.g = g
+            #pub_key = ast.literal_eval(pair[0])
+            #g = pub_key[0]
+            #n = pub_key[1]
+            pall_pub = pair[0]#paillier.PaillierPublicKey(n)
+            #pall_pub.g = g
             
-            print("DEBUG - pub_key = " + str((self.rsa_priv.n, self.rsa_priv.e)))
-            print("DEBUG - priv_key = " + str((self.rsa_priv.d)))
+            #print("DEBUG - pub_key = " + str((self.rsa_priv.n, self.rsa_priv.e)))
+            #print("DEBUG - priv_key = " + str((self.rsa_priv.d)))
             cipher_data = ast.literal_eval(pair[1])
-            print("DEBUG - ciphertexts = " + str(cipher_data))
+            #print("DEBUG - ciphertexts = " + str(cipher_data))
 
             cipher = PKCS1_OAEP.new(self.rsa_priv)
             p = pickle.loads(cipher.decrypt(cipher_data[0]))
@@ -190,7 +190,7 @@ class Client():
             #p = priv_data[0]
             #q = priv_data[1]
 
-            print("DEBUG - (p: {},\n q: {},\n n: {}".format(p, q, n))
+            #print("DEBUG - (p: {},\n q: {},\n n: {}".format(p, q, n))
             pall_priv = paillier.PaillierPrivateKey(pall_pub, p, q)
 
             self.pall_keys[rsa_pub] = (pall_pub, pall_priv)
@@ -200,10 +200,16 @@ class Client():
         Sends trade to server through list of paillier encrypted ciphertexts for every other
         client in the network.
         """
+        if 'amt' not in trade or 'ticker' not in trade:
+            raise ValueError("Malformed trade: {}".format(trade))
+
+        if abs(trade['amt']) > MAX_TRADE_VOL:
+            raise ValueError("Trade volume too large {}. Max is {}".format(abs(trade['amt']), MAX_TRADE_VOL))
+
         ticker_encoding = int(self.ticker_map[trade['ticker']])
-        if trade['val'] < 0:
+        if trade['amt'] < 0:
             ticker_encoding *= -1
-        print("CLIENT - Sending Trade: {}: {} = {}".format(trade['ticker'], trade['val'], ticker_encoding))
+        print("CLIENT - Sending Trade: {}: {} = {}".format(trade['ticker'], trade['amt'], ticker_encoding))
         ciphers = {}
         for rsa_pub, pall_pair in self.pall_keys.items():
             pall_pub = pall_pair[0]
@@ -219,20 +225,127 @@ class Client():
             print("CLIENT - Error sending trade: " + auth_geterror(resp))
             return False
 
-        self.waiting_trades.add(resp)
+        trade_id = resp
+        self.waiting_trades[trade_id] = trade
+        return True
 
-    def query_trades(self, resp):
+    def generate_table(self, volume):
+        volume_bits = auth_getvolumebits(volume)
+        # Now make the table
+        enc_0 = pall_pub.encrypt(0)
+        enc_r = pall_pub.encrypt(random.randint(-pall_pub.n//3, pall_pub.n//3))
+
+        table = [[None]*VOLUME_NUM_BITS, [None]*VOLUME_NUM_BITS]
+        for i in range(len(table)):
+            for j in range(VOLUME_NUM_BITS):
+                table[i][j] = enc_r
+
+        for i,bit in enumerate(volume_bits):
+            table[bit][i] = enc_0
+
+        return table
+
+    def complete_trade(self, trade_id, other_pub_key):
+        # First generate new pallier key-pair to maintain volume-secrecy
+
+        # Now create bit representation of trade volume
+        volume = abs(self.waiting_trades[trade_id]['amt']) #Note: Max volume checked during trade send
+        lower_vol = 0
+
+        # Buyer initiates (i.e. volume > 0)
+        if volume > 0:
+            pall_pub, pall_priv = paillier.generate_paillier_keypair()
+            table = self.generate_table(volume)
+            #print("DEBUG: volume_bits = {}\n table = {}".format(volume_bits, table))
+            msg = {'method': 'send_table', 'params': [other_pub_key, trade_id, table]}
+
+            # Wait to recieve dummy table
+            self.send_message(msg)
+
+            # Send fake c vector
+            fake_c = [random.randint(-pall_pub.n, pall_pub.n) for i in range(VOLUME_NUM_BITS)]
+            msg = {'method':'send_c', 'params': [other_pub_key, trade_id, fake_c]}
+
+            # Recieve real result vector
+            c = self.send_message(msg)
+           
+            # Decrypt c vector
+            greater = False
+            for i in range(VOLUME_NUM_BITS):
+                val = pall_priv.decrypt_encoded(c[i])
+                if val == 0:
+                    greater = True
+                    break
+
+            if greater == True:
+                # Buy > Sell (i.e. x > y)
+                # Send 0 to indicate that y should send the lower value
+                msg = {'method': 'notify_volume', 'params': self.rsa_pub.encrypt(0)}
+                lower_vol = self.send_message(msg)
+            else:
+                # Send the lower value to the other client
+                msg = {'method': 'notify_volume', 'params': self.rsa_pub.encrypt(volume)}
+                lower_vol = self.send_message(msg)
+
+            # Send fake volume notification
+            msg = {'method': 'send_min_volume', 'params': self.rsa_pub.encrypt(volume)}
+            self.send_message(msg)
+
+
+        else:
+            # Seller waits for buyer to send table, sends fake table to hide selling
+            fake_table = self.generate_table(random.randint(-pall_pub.n, pall_pub.n))
+            msg = {'method': 'send_table', 'params': [other_pub_key, trade_id, fake_table]}
+
+            #Wait to recieve real table
+            table = self.send_message(msg)
+            pall_pub = table[0][0].public_key()
+
+            # Compute c vector
+            y_volume_bits = auth_getvolumebits(volume)
+            c = [None]*VOLUME_NUM_BITS
+            for i in range(VOLUME_NUM_BITS):
+                if y_volume_bits[i] == 0:
+                    val = table[1][i]
+                    k = random.randint(-pall_pub.n//3, pall_pub.n)
+                    for j in range(i+1, VOLUME_NUM_BITS):
+                        val += table[y_volume_bits[j]][j]
+                    val *= k
+                    c[i] = val
+                else:
+                    c[i] = random.randint(-pall_pub.n, pall_pub.n)
+
+            random.shuffle(c)
+            
+            msg = {'method':'send_c', 'params': [other_pub_key, trade_id, c]}
+            # Recieve fake c vector
+            fake_c = self.send_message(msg)
+            # Send fake volume notification to get response from other client
+            msg = {'method': 'notify_volume', 'params': self.rsa_pub.encrypt(0)}
+            lower_vol = self.send_message(msg)
+
+            # Reci
+            
+
+            print("CLIENT: Completed trade with final volume = {}"
+
+
+
+    def query_trades(self):
         """
         Iterates over outstanding trades on server to search for match
         """
         msg = {'method': 'query_trades', 'params':[]}
-        resp = send_msg(msg, filter_trade_data=False)
+        resp = self.send_message(msg, filter_trade_data=False)
         for trade_id, d in resp.items():
             for other_trade_id, data in d.items():
                 other_pub_key = data[0]
-                comp_ciper = data[1]
-                if encoding.EncodedNumber.decode(self.pall_keys[other_pub_key][1].decrypt(comp_cipher)) == 0:
-                    print("CLIENT - Match Found!!")
+                comp_cipher = data[1]
+                decrypted = self.pall_keys[other_pub_key][1].decrypt_encoded(comp_cipher).decode()
+                if decrypted == 0:
+                    print("CLIENT - Match found: {} <=> {}".format(trade_id, other_trade_id))
+                    # Attempt to open channel through CA and compute volume
+                    self.complete_trade(trade_id, other_pub_key)
 
     def run_test_case(self, trades):
         """
@@ -240,13 +353,19 @@ class Client():
         trades := [{ticker: ticker, val: trade_value}, ...]
         """
         # Do trades
-        TEST_TIMEOUT_INT = 5
+        TEST_TIMEOUT = 15
+        TRADE_TEST_INTERVAL = 2
         print("TEST: trades = {}".format(trades))
+        start_test_time = time.clock()
         for trade in trades:
             if not self.send_trade(trade):
-                return False
-            cur_time = start_time = time.clock()
-            while cur_time - start_time < TEST_TIMEOUT_INT:
-                self.query_trades()
+                raise RuntimeError("CLIENT - Error sending trade: ".format(trade))
+           # cur_time = trade_time = time.clock()
+           # while cur_time - trade_time < TRADE_TEST_INTERVAL:
+           #     self.query_trades()
+           #     cur_time = time.clock()
+        while time.clock() - start_test_time < TEST_TIMEOUT:
+            self.query_trades()
+            time.sleep(2)
 
-        self.query_trades()
+        print("CLIENT - Done Running Test Case")

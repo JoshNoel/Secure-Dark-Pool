@@ -1,4 +1,4 @@
-#!/bin/python3 from xmlrpc.server import SimpleXMLRPCServer
+#!/bin/python3 
 from xmlrpc.server import SimpleXMLRPCRequestHandler, SimpleXMLRPCServer
 from random import shuffle
 import threading
@@ -12,9 +12,10 @@ import json
 import ast
 import pickle
 import sys
+from Crypto.Random import random
 
 AVAIL_PORTS = range(8001, 8010)
-REGISTRATION_PERIOD_LEN = 5    # Time on key-refresh where new clients can join pool
+REGISTRATION_PERIOD_LEN = 7    # Time on key-refresh where new clients can join pool
 KEY_REFRESH_INTERVAL = 300      # Length of single key-cycle
 MAX_TRADE_ID = 10000
 MAX_CLIENT_ID = 10000
@@ -23,33 +24,48 @@ MATCH_WAIT_TIME = 2
 # Structure definitions
 #   outstanding_trade: (offering_client_id, pallier_ciphers)
 
+def generate_tickers():
+    #TODO: Load ticker list and dynamically generate tickers
+    tickers = {
+        "APPL": 1,
+        "MSFT": 2}
+    return tickers
+
 class CARequestHandler(SimpleXMLRPCRequestHandler):
     rpc_paths = ('/RPC2')
 
 class ClientHandler(mp.Process):
     def _send_key_refresh(self):
         self.sock_client.send(b'key_refresh')
-    
+
     def _query_trades(self):
         for trade_id, ciphers in self.cur_trades[self.client_id]['original'].items():
-            _match_trade(trade_id, ciphers)
-        
+            self._match_trade(trade_id, ciphers)
+
         return self.cur_trades[self.client_id]['computed']
 
     def _match_trade(self, trade_id, ciphers):
         d = None
+        view = None
         with self.pall_lock:
-            d = self.cur_trades[self.client_id]['computed'][trade_id]
+            view = self.cur_trades[self.client_id]
+            if trade_id not in view['computed']:
+                view['computed'][trade_id] = {}
+
+            d = view['computed'][trade_id]
         for client_id, t in self.cur_trades.items():
             if client_id == self.client_id:
                 continue
             for other_trade_id, other_cipher_dict in t['original'].items():
                 pall_pub = self.pall_dict[self.client_pub_key][self.pub_key_dict[client_id]][0]
-                d[other_trade_id] = (self.pub_key_dict[client_id],
-                                     other_cipher_dict[self.client_pub_key]*ciphers[self.pub_key_dict[client_id]])
+                hidden_and_encrypted = other_cipher_dict[self.client_pub_key] + ciphers[self.pub_key_dict[client_id]]
+                #hidden_and_encrypted *= EncodedNumber.encode(pall_pub, pall_pub.get_random_lt_n())
+                hidden_and_encrypted *= random.randint(-pall_pub.n//3, pall_pub.n//3)
+                d[other_trade_id] = (self.pub_key_dict[client_id], hidden_and_encrypted)
 
         with self.pall_lock:
-            self.cur_trades[self.client_id]['computed'][trade_id] = d
+            view['computed'][trade_id] = d
+            self.cur_trades[self.client_id] = view
 
 
     def _del_trade(self, trade_id):
@@ -79,8 +95,11 @@ class ClientHandler(mp.Process):
         with self.pall_lock:
             d = self.cur_trades[self.client_id]['original']
             d[trade_id] = ciphers
-            self.cur_trades[self.client_id]['original'] = d
+            t = self.cur_trades[self.client_id]
+            t['original'] = d
+            self.cur_trades[self.client_id] = t
             self.num_outstanding.value += 1
+
         return trade_id
 
     def _post_pallier_keys(self, pall_keys):
@@ -193,7 +212,7 @@ class ClientHandler(mp.Process):
             if b == b'':
                 continue
             msg = pickle.loads(b)
-            print("SERVER: Recieved Message - " + str(msg))
+            #print("SERVER: Recieved Message - " + str(msg))
             method = msg['method']
             params = msg['params']
            
@@ -257,7 +276,7 @@ class CentralAuthority:
     def __init__(self, server_name):
         self.server_name = server_name
         self.manager = mp.Manager()
-        self.ticker_map = {"APPL": 1} #TODO: Load tickers and generate map
+        self.ticker_map = generate_tickers() #TODO: Load tickers and generate map
         self.open_ports = list(AVAIL_PORTS)
         self.key_store = KeyStore()
         # Now done in self.match_trades

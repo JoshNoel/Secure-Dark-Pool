@@ -29,8 +29,15 @@ def run_client(test_file):
         test = json.load(f)
 
     # TODO: Check file format
-    client.run_test_case(test)
-
+    try:
+        client.run_test_case(test)
+    except Exception as e:
+        print("Running test cases failed: " + str(e))
+        traceback.print_exc()
+        client.kill()
+        return -1
+    
+    print("Tests done: killing client")
     client.kill()
     return 0
 
