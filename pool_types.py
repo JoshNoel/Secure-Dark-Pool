@@ -8,6 +8,7 @@ AUTH_IN_REG_PERIOD = -5
 AUTH_OUTSIDE_REG_PERIOD = -6
 AUTH_QUERY_TIMEOUT = -7
 AUTH_PERMISSION_ERR = -8
+AUTH_MISTYPED_MSG = -9
 
 
 AUTH_ERRORS = {
@@ -19,7 +20,8 @@ AUTH_ERRORS = {
     AUTH_IN_REG_PERIOD: "AUTH: Attempt failed as registration period is ongoing",
     AUTH_OUTSIDE_REG_PERIOD: "AUTH: Attempt to Register outside reg period",
     AUTH_QUERY_TIMEOUT: "AUTH: Server query timeout",
-    AUTH_PERMISSION_ERR: "AUTH: Permission Denied"
+    AUTH_PERMISSION_ERR: "AUTH: Permission Denied",
+    AUTH_MISTYPED_MSG: "AUTH: Client Handler runtime error. Received message from other client in wrong order"
 }
 def auth_geterror(e):
     return AUTH_ERRORS[e]

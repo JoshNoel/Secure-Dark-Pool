@@ -15,7 +15,7 @@ import sys
 from Crypto.Random import random
 
 AVAIL_PORTS = range(8001, 8010)
-REGISTRATION_PERIOD_LEN = 7    # Time on key-refresh where new clients can join pool
+REGISTRATION_PERIOD_LEN = 5    # Time on key-refresh where new clients can join pool
 KEY_REFRESH_INTERVAL = 300      # Length of single key-cycle
 MAX_TRADE_ID = 10000
 MAX_CLIENT_ID = 10000
@@ -35,8 +35,63 @@ class CARequestHandler(SimpleXMLRPCRequestHandler):
     rpc_paths = ('/RPC2')
 
 class ClientHandler(mp.Process):
-    def _send_key_refresh(self):
-        self.sock_client.send(b'key_refresh')
+    def _send_message(self, message):
+        self.sock_client.send(pickle.dumps(message))
+
+    def _handle_msg(self, msg):
+        if msg['type'] == 'refresh':
+            self.send_message(msg)
+        elif msg['type'] == 'table':
+            self.matched_items['table'] = msg['data']
+        elif msg['type'] == 'c':
+            self.matched_items['c'] = msg['data']
+        elif msg['type'] == 'notify_vol':
+            self.matched_items['notify_vol'] = msg['data']
+        elif msg['type'] == 'min_vol':
+            self.matched_items['min_vol'] = msg['data']
+
+    def _wait_item(self, item_name):
+        while True:
+            msg = self.comm_q.get()
+            if msg['type'] == 'refresh':
+                self._send_message(msg)
+            elif msg['type'] == item_name:
+                return msg['data']
+            else:
+                return AUTH_MISTYPED_MSG
+
+    def _send_table(self, other_pub_key, trade_ids, table):
+        self.matched_pub = other_pub_key
+        self.comm_qs[other_pub_key].put({"type": "table", "data": table})
+        if self.matched_items["table"] is not None:
+            x = self.match_items["table"]
+            self.matched_items["table"] = None
+            return x
+        return self._wait_item("table")
+
+    def _send_c(self, c):
+        self.comm_qs[other_pub_key].put({"type": "c", "data": c})
+        if self.matched_items["c"] is not None:
+            x = self.match_items["c"]
+            self.matched_items["c"] = None
+            return x
+        return self._wait_item("c")
+
+    def _nofify_vol(self, cipher):
+        self.comm_qs[other_pub_key].put({"type": "notify_vol", "data": cipher})
+        if self.matched_items["notify_vol"] is not None:
+            x = self.match_items["notify_vol"]
+            self.matched_items["notify_col"] = None
+            return x
+        return self._wait_item("notify_vol")
+
+    def _send_min_vol(self, cipher):
+        self.comm_qs[other_pub_key].put({"type": "min_vol", "data": cipher})
+        if self.matched_items["min_vol"] is not None:
+            x = self.match_items["min_vol"]
+            self.matched_items["min_vol"] = None
+            return x
+        return self._wait_item("min_vol")
 
     def _query_trades(self):
         for trade_id, ciphers in self.cur_trades[self.client_id]['original'].items():
@@ -148,7 +203,7 @@ class ClientHandler(mp.Process):
         print("SERVER: Returning pallier keys for - " + str(self.client_pub_key))
         return {str(k): v for k,v in self.pall_dict[self.client_pub_key].items()}
 
-    def __init__(self, server_name, client_id, pub_key_dict, port, refresh_q, trades, num_clients, 
+    def __init__(self, server_name, client_id, pub_key_dict, port, comm_qs, trades, num_clients, 
                          start_event, gen_pall_list, pall_key_cntr, pall_key_lock, pall_dict,
                         num_outstanding):
         """
@@ -156,7 +211,7 @@ class ClientHandler(mp.Process):
         client_id: id of client that process is responsible for. Known only by the owner client.
         pub_key_dict: Dictionary of client_id to public key. The exposed identity on any client communication. Used to forward pallier keys
         port: server port assigned to client during registration
-        refresh_q: Multiprocessing queue to which server pushed '1' to notify all clientHandler's of key refresh
+        comm_qs: {pub_key: Q} - Maps to multiprocessing queue to which clients and server push information
         trades: Shared trades dict that holds all outstanding trades. Used for matching and posting trades
         num_clients: Holds number of clients in current registration period
         start_event: All client handler's wait for this event to indicate end of registration period
@@ -172,7 +227,8 @@ class ClientHandler(mp.Process):
         self.client_pub_key = pub_key_dict[self.client_id]
         self.pub_key_dict = pub_key_dict
         self.port = port
-        self.refresh_q = refresh_q
+        self.comm_qs = comm_qs
+        self.comm_q = comm_qs[self.client_pub_key]
         self.cur_trades = trades
         self.num_clients = num_clients
         self.start_event = start_event
@@ -182,6 +238,9 @@ class ClientHandler(mp.Process):
         self.pall_dict = pall_dict
         self.num_outstanding = num_outstanding
         self.sock_client = None
+
+        self.matched_pub = None
+        self.matched_items = {'table': None, 'c': None, 'notify_vol': None, 'min_vol': None}
 
     def run(self):
         sock_server = socket.socket()
@@ -203,10 +262,10 @@ class ClientHandler(mp.Process):
         # Now loop to accept trade requests
         while True:
             # Check for key refresh
-            if not self.refresh_q.empty():
-                self.refresh_q.get()
-                self.send_key_refresh(sock_client)
-
+            if not self.comm_q.empty():
+                msg = self.comm_q.get()
+                self._handle_msg(msg)
+                
             # Receive message from client and attempt to parse it
             b = self.sock_client.recv(4096)
             if b == b'':
@@ -226,6 +285,14 @@ class ClientHandler(mp.Process):
                 res = self._query_trades()
             elif method == 'del_trade':
                 res = self._del_trade(*params)
+            elif method == 'send_table':
+                res = self._send_table(*params)
+            elif method == 'send_c':
+                res = self._send_c(*params)
+            elif method == 'notify_volume':
+                res = self._nofify_vol(*params)
+            elif method == 'send_min_volume':
+                res = self._send_min_vol(*params)
             else:
                 res = AUTH_INVALID_METHOD_ERR
 
@@ -239,6 +306,7 @@ class ClientHandler(mp.Process):
 class KeyStore:
     def __init__(self):
         self._rsa_keys = {}
+        self._id_map = {}
 
     def add_rsa_key(self, key):
         """
@@ -247,6 +315,7 @@ class KeyStore:
         # FIXME: Need to expand client id space
         i = random.randint(0, MAX_CLIENT_ID)
         self._rsa_keys[i] = key
+        self._id_map[key] = i
         print("SERVER: id = " + str(i) + ", key = " + str(self._rsa_keys[i]))
         return i
 
@@ -263,6 +332,12 @@ class KeyStore:
         Returns raw dictionary. Only for internal server use. client_id keys should be kept secret
         """
         return self._rsa_keys
+
+    def serv_get_id(self, pub_key):
+        """
+        Returns client_id given public key
+        """
+        return self._id_map[pub_key]
 
     def num_keys(self):
         return len(self._rsa_keys)
@@ -284,7 +359,7 @@ class CentralAuthority:
         self.start_clients_thread = threading.Timer(REGISTRATION_PERIOD_LEN, self.start_clients)
         self.timer_start = time.time()
 
-        self.clients = {} # Holds (client_id, refresh_q) Where refresh_q is a mp Queue for passing key refresh messages
+        self.clients = {} # Holds (client_id, comm_q) Where comm_q is a mp Queue for passing messages
         self.cur_trades = self.manager.dict() # Shared memory dict among all client handler processes
         self.num_outstanding = self.manager.Value('i', 0, lock=False)
 
@@ -301,6 +376,8 @@ class CentralAuthority:
 
         self.active_procs = []
         self.num_active_clients = 0
+
+        self.comm_qs = {}
 
     def gen_pall_pairs(self):
         """
@@ -338,10 +415,9 @@ class CentralAuthority:
         for client_id, info in self.clients.items():
             assigned_port = info[0]
             pub_key = info[1]
-            q = mp.Queue()
             # Launches client handler process. daemon=True means client handlers are killed when server process is
             proc = ClientHandler(self.server_name, client_id, 
-                        self.key_store.serv_get_rsa(), assigned_port, q, self.cur_trades, self.key_store.num_keys, 
+                        self.key_store.serv_get_rsa(), assigned_port, self.comm_qs, self.cur_trades, self.key_store.num_keys, 
                         self.start_event, self.pall_key_gen[client_id], self.pall_key_cntr,
                         self.pall_key_lock, self.pall_keys, self.num_outstanding)
             proc.start()
@@ -373,8 +449,8 @@ class CentralAuthority:
         self.open_ports = AVAIL_PORTS
         self.key_store.refresh()
         self.cur_trades = {}
-        for client_id, refresh_q in self.clients.items():
-            refresh_q.put(1)
+        for pub_key, comm_q in self.comm_qs.items():
+            comm_q.put({'type': 'refresh', 'data': self.key_store.serv_get_id(pub_key)})
 
         # Restart refresh timer
         self.timer_start = time.time()
@@ -400,7 +476,8 @@ class CentralAuthority:
             else:
                 self.start_clients_thread.start()
                 self.refresh_thread.start()
-
+        # Create Communication Queue
+        self.comm_qs[pub_key] = mp.Queue()
         client_id = self.key_store.add_rsa_key(pub_key)
         assigned_port = random.choice(self.open_ports)
         self.open_ports.remove(assigned_port)

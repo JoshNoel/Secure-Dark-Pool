@@ -229,7 +229,7 @@ class Client():
         self.waiting_trades[trade_id] = trade
         return True
 
-    def generate_table(self, volume):
+    def generate_table(self, volume, pall_pub):
         volume_bits = auth_getvolumebits(volume)
         # Now make the table
         enc_0 = pall_pub.encrypt(0)
@@ -245,7 +245,7 @@ class Client():
 
         return table
 
-    def complete_trade(self, trade_id, other_pub_key):
+    def complete_trade(self, trade_id, other_trade_id, other_pub_key):
         # First generate new pallier key-pair to maintain volume-secrecy
 
         # Now create bit representation of trade volume
@@ -255,16 +255,16 @@ class Client():
         # Buyer initiates (i.e. volume > 0)
         if volume > 0:
             pall_pub, pall_priv = paillier.generate_paillier_keypair()
-            table = self.generate_table(volume)
+            table = self.generate_table(volume, pall_pub)
             #print("DEBUG: volume_bits = {}\n table = {}".format(volume_bits, table))
-            msg = {'method': 'send_table', 'params': [other_pub_key, trade_id, table]}
+            msg = {'method': 'send_table', 'params': [other_pub_key, (trade_id, other_trade_id), table]}
 
             # Wait to recieve dummy table
             self.send_message(msg)
 
             # Send fake c vector
             fake_c = [random.randint(-pall_pub.n, pall_pub.n) for i in range(VOLUME_NUM_BITS)]
-            msg = {'method':'send_c', 'params': [other_pub_key, trade_id, fake_c]}
+            msg = {'method':'send_c', 'params': [fake_c]}
 
             # Recieve real result vector
             c = self.send_message(msg)
@@ -280,22 +280,24 @@ class Client():
             if greater == True:
                 # Buy > Sell (i.e. x > y)
                 # Send 0 to indicate that y should send the lower value
-                msg = {'method': 'notify_volume', 'params': self.rsa_pub.encrypt(0)}
+                msg = {'method': 'notify_volume', 'params': [other_pub_key.encrypt(0)]}
                 lower_vol = self.send_message(msg)
             else:
                 # Send the lower value to the other client
-                msg = {'method': 'notify_volume', 'params': self.rsa_pub.encrypt(volume)}
-                lower_vol = self.send_message(msg)
+                msg = {'method': 'notify_volume', 'params': [other_pub_key.encrypt(volume)]}
+                self.send_message(msg)
+                lower_vol = volume
 
             # Send fake volume notification
-            msg = {'method': 'send_min_volume', 'params': self.rsa_pub.encrypt(volume)}
-            self.send_message(msg)
-
+            msg = {'method': 'send_min_volume', 'params': [other_pub_key.encrypt(volume)]}
+            resp = self.send_message(msg)
+            if lower_vol == 0:
+                lower_vol = resp
 
         else:
             # Seller waits for buyer to send table, sends fake table to hide selling
-            fake_table = self.generate_table(random.randint(-pall_pub.n, pall_pub.n))
-            msg = {'method': 'send_table', 'params': [other_pub_key, trade_id, fake_table]}
+            fake_table = self.generate_table(random.randint(-pall_pub.n, pall_pub.n), pall_pub)
+            msg = {'method': 'send_table', 'params': [other_pub_key, (trade_id, other_trade_id), fake_table]}
 
             #Wait to recieve real table
             table = self.send_message(msg)
@@ -317,19 +319,24 @@ class Client():
 
             random.shuffle(c)
             
-            msg = {'method':'send_c', 'params': [other_pub_key, trade_id, c]}
+            msg = {'method':'send_c', 'params': [c]}
             # Recieve fake c vector
             fake_c = self.send_message(msg)
             # Send fake volume notification to get response from other client
-            msg = {'method': 'notify_volume', 'params': self.rsa_pub.encrypt(0)}
-            lower_vol = self.send_message(msg)
+            msg = {'method': 'notify_volume', 'params': [other_pub_key.encrypt(0)]}
+            lower_vol = self.rsa_priv.decrypt(self.send_message(msg))
 
-            # Reci
-            
+            # Send minimum volume if we need to
+            if lower_vol == 0:
+                msg = {'method': 'send_min_volume', 'params': [other_pub_key.encrypt(volume)]}
+                lower_volume = volume
+                self.send_message(msg)
+            else:
+                msg = {'method': 'send_min_volume', 'params': [other_pub_key.encrypt(0)]}
+                self.send_message(msg)
 
-            print("CLIENT: Completed trade with final volume = {}"
 
-
+        print("CLIENT: Completed trade with final volume = {}".format(lower_vol))
 
     def query_trades(self):
         """
@@ -345,7 +352,7 @@ class Client():
                 if decrypted == 0:
                     print("CLIENT - Match found: {} <=> {}".format(trade_id, other_trade_id))
                     # Attempt to open channel through CA and compute volume
-                    self.complete_trade(trade_id, other_pub_key)
+                    self.complete_trade(trade_id, other_trade_id, other_pub_key)
 
     def run_test_case(self, trades):
         """
