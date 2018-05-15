@@ -1,4 +1,4 @@
-from phe import paillier
+from phe import paillier, encoding
 from Crypto.PublicKey.RSA import generate, construct
 from Crypto.Cipher import PKCS1_OAEP
 import xmlrpc.client as xmlrpclib
@@ -18,11 +18,7 @@ class Client():
 
         #generate secure RSA public/private key pairs
         self.rsa_priv = generate(self.lb)
-        msg = ('test', 'rsa')
         self.rsa_pub = self.rsa_priv.publickey()
-        c = self.rsa_pub.encrypt(pickle.dumps(msg), None)
-        out = self.rsa_priv.decrypt(c)
-        print("DEBUG - msg = {}, out = {}".format(msg, pickle.loads(out)))
         self.proxy = xmlrpclib.ServerProxy("http://" + server_name + ":"+ str(server_rpc_port))
         self.server_name = server_name
         self.sock = None
@@ -33,6 +29,7 @@ class Client():
 
         self.pub_keys = None
         self.pall_keys = {}
+        self.waiting_trades = set()
 
     def kill(self):
         try:
@@ -90,7 +87,7 @@ class Client():
 
         # Get public key list from server
         while self.pub_keys is None:
-            time.sleep(5)
+            time.sleep(1)
             query_pub_res = self.proxy.query_pub_keys()
             if query_pub_res != AUTH_IN_REG_PERIOD:
                 res = pickle.loads(query_pub_res.data)
@@ -103,8 +100,12 @@ class Client():
 
         # Initialize socket connection
         self.sock = socket.socket()
-        print("CLIENT: connecting to " + str(self.server_name))
-        self.sock.connect((self.server_name, self.server_port))
+        print("CLIENT {}: connecting to {} at {}".format(self.i, self.server_name, self.server_port))
+        
+        x = -1
+        while x != 0:
+            x = self.sock.connect_ex((self.server_name, self.server_port))
+            time.sleep(1)
         print("Client Connected")
 
         # On connection server sends the public keys to generate pallier pairs for
@@ -137,7 +138,6 @@ class Client():
             j_public_e = pub_keys[j][1]
             j_public_n = pub_keys[j][0]
 
-            print("DEBUG - pub_key = " + str((pub_keys[j])))
             pubkey = construct(tuple(pub_keys[j]))
             cipher = PKCS1_OAEP.new(pubkey)
             #convert priv_ij to binary (encrypt (p,q) and then rebuild private key on decryption
@@ -146,14 +146,9 @@ class Client():
             private_p = pickle.dumps(pal_priv_ij.p)
             private_q = pickle.dumps(pal_priv_ij.q)
             #private_bytes = pickle.dumps((pal_priv_ij.p, pal_priv_ij.q))
-            print("DEBUG - ({}, p: {}, q: {}, n: {}".format(j, pal_priv_ij.p, pal_priv_ij.q, pal_pub_ij.n))
             #print("DEBUG - private_bytes ({}) = {}".format(len(private_bytes), private_bytes))
-            print("DEBUG - private_p ({}) = {}".format(len(private_p), private_p))
-            print("DEBUG - private_q ({}) = {}".format(len(private_q), private_q))
             ciphertext_p = cipher.encrypt(private_p)
             ciphertext_q = cipher.encrypt(private_q)
-            print("DEBUG - ciphertexts = " + str((ciphertext_p, ciphertext_q)))
-            print("DEBUG - key_size = " + str(pubkey.size()))
             pal_priv_ij_encrypt = str((ciphertext_p, ciphertext_q))
             pal_pub_str = str((pal_pub_ij.g, pal_pub_ij.n))
 
@@ -169,7 +164,9 @@ class Client():
         Updates local pallier key dict given encrypted pallier key dictionary mapping {user_pub_key: (PALL_PK,
         ENC(PALL_SK))} where ENC uses the current user's secret key
         """
-        for pub_key, pair in pall_keys.items():
+        for rsa_pub, pair in pall_keys.items():
+            if rsa_pub in self.pall_keys:
+                continue
             pub_key = ast.literal_eval(pair[0])
             g = pub_key[0]
             n = pub_key[1]
@@ -196,27 +193,60 @@ class Client():
             print("DEBUG - (p: {},\n q: {},\n n: {}".format(p, q, n))
             pall_priv = paillier.PaillierPrivateKey(pall_pub, p, q)
 
-            print("CLIENT: Test - " + str(pall_pub), str(pall_priv))
-
-            self.pall_keys[pub_key] = (pall_pub, pall_priv)
+            self.pall_keys[rsa_pub] = (pall_pub, pall_priv)
 
     def send_trade(self, trade):
         """
         Sends trade to server through list of paillier encrypted ciphertexts for every other
         client in the network.
         """
-        ticker_encoding = self.ticker_map[trade
-        msg = {'method': 'post_trade', 'params': [[ciphers]]}
+        ticker_encoding = int(self.ticker_map[trade['ticker']])
+        if trade['val'] < 0:
+            ticker_encoding *= -1
+        print("CLIENT - Sending Trade: {}: {} = {}".format(trade['ticker'], trade['val'], ticker_encoding))
+        ciphers = {}
+        for rsa_pub, pall_pair in self.pall_keys.items():
+            pall_pub = pall_pair[0]
+            # Encode value to support signed integers
+            e = encoding.EncodedNumber.encode(pall_pub, ticker_encoding)
+            ciphers[rsa_pub] = pall_pub.encrypt(e)
 
-    def parse_trade_resp(self, resp):
+        msg = {'method': 'post_trade', 'params': [ciphers]}
+        resp = self.send_message(msg, filter_trade_data=False)
+
+        # Server should only return error or trade_id
+        if isinstance(resp, collections.Hashable) and resp in AUTH_ERRORS:
+            print("CLIENT - Error sending trade: " + auth_geterror(resp))
+            return False
+
+        self.waiting_trades.add(resp)
+
+    def query_trades(self, resp):
+        """
+        Iterates over outstanding trades on server to search for match
+        """
+        msg = {'method': 'query_trades', 'params':[]}
+        resp = send_msg(msg, filter_trade_data=False)
+        for trade_id, d in resp.items():
+            for other_trade_id, data in d.items():
+                other_pub_key = data[0]
+                comp_ciper = data[1]
+                if encoding.EncodedNumber.decode(self.pall_keys[other_pub_key][1].decrypt(comp_cipher)) == 0:
+                    print("CLIENT - Match Found!!")
 
     def run_test_case(self, trades):
         """
         Loads list of trades in order to simulate trades.
-        trades := [(Ticker, amt), ...]
+        trades := [{ticker: ticker, val: trade_value}, ...]
         """
         # Do trades
         TEST_TIMEOUT_INT = 5
+        print("TEST: trades = {}".format(trades))
         for trade in trades:
-            self.send_trade(trade)
-            time.sleep(TEST_TIMEOUT_INT)
+            if not self.send_trade(trade):
+                return False
+            cur_time = start_time = time.clock()
+            while cur_time - start_time < TEST_TIMEOUT_INT:
+                self.query_trades()
+
+        self.query_trades()

@@ -3,6 +3,7 @@ from client_creator import Client
 import multiprocessing as mp
 import json
 import os
+import traceback
 
 SERVER_ADDR = "http://localhost"
 SERVER_NAME = "localhost"
@@ -15,10 +16,11 @@ LAMBDA_BITS = 1536
 
 def run_client(test_file):
     client = Client(LAMBDA_BITS, SERVER_NAME, SERVER_RPC_PORT)
-
     try:
         client.register()
     except Exception as e:
+        print("Registration Failed: " + str(e))
+        traceback.print_exc()
         client.kill()
         return -1
 
@@ -51,6 +53,3 @@ if __name__ == "__main__":
     client_2.start()
     client_1.join()
     client_2.join()
-
-    print("Testing Key Exchange...")
-
