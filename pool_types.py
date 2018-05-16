@@ -30,8 +30,7 @@ VOLUME_NUM_BITS = 20
 MAX_TRADE_VOL = 2**VOLUME_NUM_BITS # 2^20 as we use at most 20 bits for volume calculation
 
 def auth_getvolumebits(volume):
-    format_str = '{0:0' + str(VOLUME_NUM_BITS) + 'b}'
-    bit_str = format_str.format(volume)
+    bit_str = '{0:0{size}b}'.format(abs(volume), size=VOLUME_NUM_BITS)
     return [int(bit_chr) for bit_chr in bit_str]
 
 

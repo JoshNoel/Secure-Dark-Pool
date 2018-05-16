@@ -64,33 +64,34 @@ class ClientHandler(mp.Process):
         self.matched_pub = other_pub_key
         self.comm_qs[other_pub_key].put({"type": "table", "data": table})
         if self.matched_items["table"] is not None:
-            x = self.match_items["table"]
+            x = self.matched_items["table"]
             self.matched_items["table"] = None
             return x
         return self._wait_item("table")
 
     def _send_c(self, c):
-        self.comm_qs[other_pub_key].put({"type": "c", "data": c})
+        self.comm_qs[self.matched_pub].put({"type": "c", "data": c})
         if self.matched_items["c"] is not None:
-            x = self.match_items["c"]
+            x = self.matched_items["c"]
             self.matched_items["c"] = None
             return x
         return self._wait_item("c")
 
     def _nofify_vol(self, cipher):
-        self.comm_qs[other_pub_key].put({"type": "notify_vol", "data": cipher})
+        self.comm_qs[self.matched_pub].put({"type": "notify_vol", "data": cipher})
         if self.matched_items["notify_vol"] is not None:
-            x = self.match_items["notify_vol"]
+            x = self.matched_items["notify_vol"]
             self.matched_items["notify_col"] = None
             return x
         return self._wait_item("notify_vol")
 
     def _send_min_vol(self, cipher):
-        self.comm_qs[other_pub_key].put({"type": "min_vol", "data": cipher})
+        self.comm_qs[self.matched_pub].put({"type": "min_vol", "data": cipher})
         if self.matched_items["min_vol"] is not None:
-            x = self.match_items["min_vol"]
+            x = self.matched_items["min_vol"]
             self.matched_items["min_vol"] = None
             return x
+        self.matched_pub = None
         return self._wait_item("min_vol")
 
     def _query_trades(self):
@@ -267,7 +268,7 @@ class ClientHandler(mp.Process):
                 self._handle_msg(msg)
                 
             # Receive message from client and attempt to parse it
-            b = self.sock_client.recv(4096)
+            b = self.sock_client.recv(15000)
             if b == b'':
                 continue
             msg = pickle.loads(b)
@@ -296,7 +297,8 @@ class ClientHandler(mp.Process):
             else:
                 res = AUTH_INVALID_METHOD_ERR
 
-            self.sock_client.send(pickle.dumps(res))
+            resp_bytes = pickle.dumps(res)
+            self.sock_client.send(resp_bytes)
 
     def terminate(self):
         if self.sock_client is not None:

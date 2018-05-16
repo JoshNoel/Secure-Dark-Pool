@@ -59,12 +59,13 @@ class Client():
        
         print("CLIENT: Sending Message - " + str(msg))
         send_msg = pickle.dumps(msg)
+        print("DEBUG: Send Message Len = {}".format(len(send_msg)))
         self.sock.send(send_msg)
        
         # Filters out trade responses received over socket
         message_resp_parsed = False
         while (not message_resp_parsed):
-            resp = pickle.loads(self.sock.recv(4096))
+            resp = pickle.loads(self.sock.recv(15000))
             print("CLIENT: Recieved Response - " + str(resp))
 
             # Check if error received
@@ -240,6 +241,9 @@ class Client():
             for j in range(VOLUME_NUM_BITS):
                 table[i][j] = enc_r
 
+        print("DEBUG: volume_bits len = {}".format(len(volume_bits)))
+        print("DEBUG: table0 len = {}".format(len(table)))
+        print("DEBUG: table1 len = {}".format(len(table[0])))
         for i,bit in enumerate(volume_bits):
             table[bit][i] = enc_0
 
@@ -249,8 +253,9 @@ class Client():
         # First generate new pallier key-pair to maintain volume-secrecy
 
         # Now create bit representation of trade volume
-        volume = abs(self.waiting_trades[trade_id]['amt']) #Note: Max volume checked during trade send
+        volume = self.waiting_trades[trade_id]['amt'] #Note: Max volume checked during trade send
         lower_vol = 0
+        other_pub_key = construct(other_pub_key)
 
         # Buyer initiates (i.e. volume > 0)
         if volume > 0:
@@ -260,9 +265,11 @@ class Client():
             msg = {'method': 'send_table', 'params': [other_pub_key, (trade_id, other_trade_id), table]}
 
             # Wait to recieve dummy table
+            print("DEBUG: Sending table")
             self.send_message(msg)
 
             # Send fake c vector
+            print("DEBUG: Sending fake_c")
             fake_c = [random.randint(-pall_pub.n, pall_pub.n) for i in range(VOLUME_NUM_BITS)]
             msg = {'method':'send_c', 'params': [fake_c]}
 
@@ -277,6 +284,7 @@ class Client():
                     greater = True
                     break
 
+            print("DEBUG: Sending volume")
             if greater == True:
                 # Buy > Sell (i.e. x > y)
                 # Send 0 to indicate that y should send the lower value
@@ -296,12 +304,13 @@ class Client():
 
         else:
             # Seller waits for buyer to send table, sends fake table to hide selling
-            fake_table = self.generate_table(random.randint(-pall_pub.n, pall_pub.n), pall_pub)
+            fake_pall_pub, fake_pall_priv = paillier.generate_paillier_keypair()
+            fake_table = self.generate_table(random.randint(-1000000, 1000000), fake_pall_pub)
             msg = {'method': 'send_table', 'params': [other_pub_key, (trade_id, other_trade_id), fake_table]}
 
             #Wait to recieve real table
             table = self.send_message(msg)
-            pall_pub = table[0][0].public_key()
+            pall_pub = table[0][0].public_key
 
             # Compute c vector
             y_volume_bits = auth_getvolumebits(volume)
@@ -309,7 +318,7 @@ class Client():
             for i in range(VOLUME_NUM_BITS):
                 if y_volume_bits[i] == 0:
                     val = table[1][i]
-                    k = random.randint(-pall_pub.n//3, pall_pub.n)
+                    k = random.randint(-pall_pub.n//3, pall_pub.n//3)
                     for j in range(i+1, VOLUME_NUM_BITS):
                         val += table[y_volume_bits[j]][j]
                     val *= k
