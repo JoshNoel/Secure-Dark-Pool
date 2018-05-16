@@ -1,0 +1,4 @@
+[
+    {"ticker": "APPL", "amt":100},
+    {"ticker": "MSFT", "amt":1000}
+]

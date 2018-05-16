@@ -17,6 +17,7 @@ import struct
 
 AVAIL_PORTS = range(8001, 8010)
 REGISTRATION_PERIOD_LEN = 7    # Time on key-refresh where new clients can join pool
+PALL_GEN_TIME = 15    # Time after registration finished that clients have to generate pallier keys
 KEY_REFRESH_INTERVAL = 300      # Length of single key-cycle
 MAX_TRADE_ID = 10000
 MAX_CLIENT_ID = 10000
@@ -29,7 +30,10 @@ def generate_tickers():
     #TODO: Load ticker list and dynamically generate tickers
     tickers = {
         "APPL": 1,
-        "MSFT": 2}
+        "MSFT": 2,
+        "BAC": 3,
+        "GE": 4,
+        "T": 5}
     return tickers
 
 class CARequestHandler(SimpleXMLRPCRequestHandler):
@@ -66,7 +70,20 @@ class ClientHandler(mp.Process):
                 return AUTH_MISTYPED_MSG
 
     def _send_table(self, other_pub_key, trade_ids, table):
-        self.matched_pub = other_pub_key
+        with self.pall_lock:
+            client_trade_id = trade_ids[0]
+            other_trade_id = trade_ids[1]
+            if (self.trading[other_pub_key] == None and self.trading[self.client_pub_key] == None) or \
+            (self.trading[other_pub_key] == client_trade_id and self.trading[self.client_pub_key] == other_trade_id):
+                self.trading[other_pub_key] = client_trade_id
+                self.trading[self.client_pub_key] = other_trade_id
+            else:
+                return False
+            # Claim other client with this trade
+            self.trading[other_pub_key] = client_trade_id
+            self.trading[self.client_pub_key] = other_trade_id
+            self.matched_pub = other_pub_key
+        #TODO: Allow client to select match, don't just pick first to send table
         self.comm_qs[other_pub_key].put({"type": "table", "data": table})
         if self.matched_items["table"] is not None:
             x = self.matched_items["table"]
@@ -96,13 +113,15 @@ class ClientHandler(mp.Process):
             x = self.matched_items["min_vol"]
             self.matched_items["min_vol"] = None
             return x
+        with self.pall_lock:
+            self.trading[self.matched_pub] = None
+            self.trading[self.client_pub_key] = None
         self.matched_pub = None
         return self._wait_item("min_vol")
 
     def _query_trades(self):
         for trade_id, ciphers in self.cur_trades[self.client_id]['original'].items():
             self._match_trade(trade_id, ciphers)
-
         return self.cur_trades[self.client_id]['computed']
 
     def _match_trade(self, trade_id, ciphers):
@@ -192,11 +211,11 @@ class ClientHandler(mp.Process):
         """
         x = None
         wait_time = 0
-        sleep_time = 1
+        sleep_time = 0.5
         with self.pall_lock:
             x = self.pall_cntr.value
 
-        while x > 0 and wait_time < REGISTRATION_PERIOD_LEN:
+        while x > 0 and wait_time < PALL_GEN_TIME:
             print("SERVER: Pall Cntr - " + str(x))
             time.sleep(sleep_time)
             wait_time += sleep_time
@@ -212,7 +231,7 @@ class ClientHandler(mp.Process):
 
     def __init__(self, server_name, client_id, pub_key_dict, port, comm_qs, trades, num_clients, 
                          start_event, gen_pall_list, pall_key_cntr, pall_key_lock, pall_dict,
-                        num_outstanding):
+                        num_outstanding, trading):
         """
         run() method of all ClientHandler processes. Takes in all state necessary to run client.
         client_id: id of client that process is responsible for. Known only by the owner client.
@@ -227,6 +246,7 @@ class ClientHandler(mp.Process):
         pall_key_lock: Used to ensure atomicity of pall_key_cntr
         pall_dict: shared memory dictionary into which all clientHandler's store the posted pallier pairs
         num_outstanding: number of outstanding trades across all clients
+        trading: dict of public_keys to act as locks to avoid trade conflicts
         """
         super(ClientHandler, self).__init__(daemon=True, name="ClientHandler")
         self.server_name = server_name
@@ -245,6 +265,7 @@ class ClientHandler(mp.Process):
         self.pall_dict = pall_dict
         self.num_outstanding = num_outstanding
         self.sock_client = None
+        self.trading = trading #TODO: Remove this
 
         self.matched_pub = None
         self.matched_items = {'table': None, 'c': None, 'notify_vol': None, 'min_vol': None}
@@ -314,7 +335,7 @@ class ClientHandler(mp.Process):
             else:
                 res = AUTH_INVALID_METHOD_ERR
             
-            print("SERVER: Returning = {}".format(res))
+            #print("SERVER: Returning = {}".format(res))
             resp_bytes = pickle.dumps(res)
             length = struct.pack('!I', len(resp_bytes))
             resp_bytes = length + resp_bytes
@@ -390,6 +411,7 @@ class CentralAuthority:
 
         # Holds the pallier key pairs that need to be sent to client_id of rsa_pub_key as pallier pair was created by other client in the pair
         self.pall_keys = self.manager.dict() # {recipient_pub_key: (sender_id, (PALL_PK, ENC(PALL_SK))... } 
+        self.trading = self.manager.dict() # Trading locks (one-at-a-time)
 
         self.reg_done = False
         self.start_event = mp.Event() # Event to notify clients that registration period is over, and pal_key_gen is correct
@@ -430,6 +452,7 @@ class CentralAuthority:
         self.pall_key_cntr.value = len(self.clients)
         for key in self.key_store.get_rsa_list():
             self.pall_keys[key] = {}
+            self.trading[key] = None
         for client_id in self.clients.keys():
             self.cur_trades[client_id] = {'original': {}, 'computed': {}}
 
@@ -442,7 +465,7 @@ class CentralAuthority:
             proc = ClientHandler(self.server_name, client_id, 
                         self.key_store.serv_get_rsa(), assigned_port, self.comm_qs, self.cur_trades, self.key_store.num_keys, 
                         self.start_event, self.pall_key_gen[client_id], self.pall_key_cntr,
-                        self.pall_key_lock, self.pall_keys, self.num_outstanding)
+                        self.pall_key_lock, self.pall_keys, self.num_outstanding, self.trading)
             proc.start()
             self.active_procs.append(proc)
             self.num_active_clients += 1
@@ -534,11 +557,13 @@ class CentralAuthority:
         Returns: True if server is dying, False otherwise
         """
         self.num_active_clients -= 1
+        print("SERVER: active clients = " + self.num_active_clients)
         if self.num_active_clients <= 0:
             # Kill server
             for proc in self.active_procs:
                 proc.terminate()
             # Give processes time to die
+            print("SERVER: All clients closed connections. Exiting...")
             time.sleep(3)
             sys.exit(0)
             return True

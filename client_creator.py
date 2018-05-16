@@ -58,9 +58,8 @@ class Client():
         assert 'method' in msg and 'params' in msg
         assert type(msg['method']) == str 
        
-        print("CLIENT: Sending Message - " + str(msg))
+        #print("CLIENT: Sending Message - " + str(msg))
         send_msg = pickle.dumps(msg)
-        print("DEBUG: Send Message Len = {}".format(len(send_msg)))
         length = struct.pack('!I', len(send_msg))
         send_msg = length + send_msg
         self.sock.send(send_msg)
@@ -77,7 +76,7 @@ class Client():
                 data += self.sock.recv(length - len(data))
             resp = pickle.loads(data)
             #resp = pickle.loads(self.sock.recv(15000))
-            print("CLIENT: Recieved Response - " + str(resp))
+            #print("CLIENT: Recieved Response - " + str(resp))
 
             # Check if error received
             if isinstance(resp, collections.Hashable) and resp in AUTH_ERRORS and resp != AUTH_SUCCESS:
@@ -108,8 +107,8 @@ class Client():
                 for keydata in res:
                     self.pub_keys.append(keydata)
 
-        print("CLIENT: pub_keys = " + str(self.rsa_pub.n))
-        print("CLIENT: priv_d = " + str(self.rsa_priv.d))
+        #print("CLIENT: pub_keys = " + str(self.rsa_pub.n))
+        #print("CLIENT: priv_d = " + str(self.rsa_priv.d))
 
         # Initialize socket connection
         self.sock = socket.socket()
@@ -123,7 +122,7 @@ class Client():
 
         # On connection server sends the public keys to generate pallier pairs for
         gen_pall_msg = pickle.loads(self.sock.recv(4096))
-        print("CLIENT: Pallier Gen Message Recv - " + str(gen_pall_msg))
+        #print("CLIENT: Pallier Gen Message Recv - " + str(gen_pall_msg))
         gen_pall_key_list = [tuple(l) for l in gen_pall_msg['params']]
         enc_pall_keys = self.generate_pal(gen_pall_key_list)
 
@@ -141,7 +140,7 @@ class Client():
 
         # serv_pall_keys = json.loads(self.sock.recv(1024).decode('utf-8'))
         self.update_pall_keys(serv_pall_keys)
-        print("CLIENT: Pallier keys updated - " + str(self.pall_keys))
+        #print("CLIENT: Pallier keys updated - " + str(self.pall_keys))
         
     def generate_pal(self, pub_keys):
         res = {}
@@ -252,9 +251,6 @@ class Client():
             for j in range(VOLUME_NUM_BITS):
                 table[i][j] = enc_r
 
-        print("DEBUG: volume_bits len = {}".format(len(volume_bits)))
-        print("DEBUG: table0 len = {}".format(len(table)))
-        print("DEBUG: table1 len = {}".format(len(table[0])))
         for i,bit in enumerate(volume_bits):
             table[bit][i] = enc_0
 
@@ -277,11 +273,14 @@ class Client():
             msg = {'method': 'send_table', 'params': [(other_pub_key.n, other_pub_key.e), (trade_id, other_trade_id), table]}
 
             # Wait to recieve dummy table
-            print("DEBUG: Sending table")
-            self.send_message(msg)
+            print("DEBUG: (buyer) Sending table")
+            x = self.send_message(msg)
+            # Could not get trading lock
+            if x == False:
+                return False
 
             # Send fake c vector
-            print("DEBUG: Sending fake_c")
+            print("DEBUG: (buyer) Sending fake_c")
             fake_c = [pall_pub.encrypt(random.randint(-pall_pub.n//3, pall_pub.n//3)) for i in range(VOLUME_NUM_BITS)]
             msg = {'method':'send_c', 'params': [fake_c]}
 
@@ -298,13 +297,12 @@ class Client():
                 except OverflowError as e:
                     pass
 
-            print("DEBUG: vals = {}".format(vals))
             for val in vals:
                 if val == 0:
                     greater = True
                     break
 
-            print("DEBUG: Sending volume")
+            print("DEBUG: (buyer) Sending notify volume")
             if greater == True:
                 # Buy > Sell (i.e. x > y)
                 # Send 0 to indicate that y should send the lower value
@@ -319,6 +317,7 @@ class Client():
                 print("Sell is greater")
 
             # Send fake volume notification
+            print("DEBUG: (buyer) Sending min volume")
             msg = {'method': 'send_min_volume', 'params': [other_pub_key.encrypt(lower_vol, None)[0]]}
             resp = self.send_message(msg)
             if lower_vol == 0:
@@ -330,9 +329,13 @@ class Client():
             fake_pall_pub, fake_pall_priv = paillier.generate_paillier_keypair()
             fake_table = self.generate_table(random.randint(-1000000, 1000000), fake_pall_pub)
             msg = {'method': 'send_table', 'params': [(other_pub_key.n, other_pub_key.e), (trade_id, other_trade_id), fake_table]}
+            
 
+            print("DEBUG: (seller) sending fake table")
             #Wait to recieve real table
             table = self.send_message(msg)
+            if not table:
+                return False
             pall_pub = table[0][0].public_key
 
             # Compute c vector
@@ -366,13 +369,17 @@ class Client():
 
             random.shuffle(c)
             
+            print("DEBUG: (seller) sending c")
             msg = {'method':'send_c', 'params': [c]}
             # Recieve fake c vector
             fake_c = self.send_message(msg)
+
+            print("DEBUG: (seller) sending fake notify volume")
             # Send fake volume notification to get response from other client
             msg = {'method': 'notify_volume', 'params': [other_pub_key.encrypt(0, None)[0]]}
             buyer_notify = self.rsa_priv.decrypt(self.send_message(msg))
             
+            print("DEBUG: (seller) sending minimum volume")
             # Send minimum volume if we need to
             if buyer_notify == 0:
                 msg = {'method': 'send_min_volume', 'params': [other_pub_key.encrypt(abs(volume), None)[0]]}
@@ -390,9 +397,9 @@ class Client():
         if lower_vol != 0:
             msg = {'method': 'finish_trade', 'params': [trade_id]}
             self.send_message(msg)
-            return
+            return True
 
-        raise RuntimeError("Trade Matched, but not completed")
+        raise RuntimeError("Trade Matched, but not completed") 
 
     def query_trades(self):
         """
@@ -401,15 +408,25 @@ class Client():
         msg = {'method': 'query_trades', 'params':[]}
         resp = self.send_message(msg, filter_trade_data=False)
         for trade_id, d in resp.items():
-            for other_trade_id, data in d.items():
+            keys = list(d.keys())
+            random.shuffle(keys)
+            for other_trade_id in keys:
+                data = d[other_trade_id]
                 other_pub_key = data[0]
                 comp_cipher = data[1]
-                decrypted = self.pall_keys[other_pub_key][1].decrypt_encoded(comp_cipher).decode()
+                decrypted = -1
+                try:
+                    decrypted = self.pall_keys[other_pub_key][1].decrypt_encoded(comp_cipher).decode()
+                except OverflowError as e:
+                    # Ignore overflows, we only care about 0
+                    pass
                 if decrypted == 0:
                     print("CLIENT - Match found {}: {} <=> {}".format(self.waiting_trades[trade_id], trade_id, other_trade_id))
                     # Attempt to open channel through CA and compute volume
-                    self.complete_trade(trade_id, other_trade_id, other_pub_key)
-                    del self.waiting_trades[trade_id]
+                    if self.complete_trade(trade_id, other_trade_id, other_pub_key):
+                        del self.waiting_trades[trade_id]
+                    else:
+                        print("CLIENT - Match found but could not get lock {}: {} <=> {}".format(self.waiting_trades[trade_id], trade_id, other_trade_id))
                     return
 
     def run_test_case(self, trades):
@@ -429,8 +446,8 @@ class Client():
            # while cur_time - trade_time < TRADE_TEST_INTERVAL:
            #     self.query_trades()
            #     cur_time = time.clock()
-        while time.clock() - start_test_time < TEST_TIMEOUT and len(self.waiting_trades) > 0:
+        while len(self.waiting_trades) > 0:
             self.query_trades()
-            time.sleep(2)
+            time.sleep(0.1)
 
         print("CLIENT - Done Running Test Case")
