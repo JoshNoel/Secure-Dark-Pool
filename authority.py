@@ -16,7 +16,7 @@ from Crypto.Random import random
 import struct
 
 AVAIL_PORTS = range(8001, 8010)
-REGISTRATION_PERIOD_LEN = 5    # Time on key-refresh where new clients can join pool
+REGISTRATION_PERIOD_LEN = 7    # Time on key-refresh where new clients can join pool
 KEY_REFRESH_INTERVAL = 300      # Length of single key-cycle
 MAX_TRADE_ID = 10000
 MAX_CLIENT_ID = 10000
@@ -135,10 +135,11 @@ class ClientHandler(mp.Process):
         Return 0 on success, -1 on failure
         """
         with self.pall_lock:
-            d = self.cur_trades[self.client_id]
-            del d[trade_id]
-            self.cur_trades[self.client_id] = d
-            self.num_outstanding -= 1
+            t = self.cur_trades[self.client_id]
+            del t['original'][trade_id]
+            del t['computed'][trade_id]
+            self.cur_trades[self.client_id] = t
+            self.num_outstanding.value -= 1
         return AUTH_SUCCESS
 
     def _post_trade(self, ciphers):
@@ -308,6 +309,8 @@ class ClientHandler(mp.Process):
                 res = self._nofify_vol(*params)
             elif method == 'send_min_volume':
                 res = self._send_min_vol(*params)
+            elif method == 'finish_trade':
+                res = self._del_trade(*params)
             else:
                 res = AUTH_INVALID_METHOD_ERR
             

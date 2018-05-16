@@ -324,7 +324,7 @@ class Client():
             if lower_vol == 0:
                 lower_vol = self.rsa_priv.decrypt(resp)
 
-            print("CLIENT: (buyer) Completed trade with final volume = {}".format(lower_vol))
+            print("CLIENT: (buyer) Completed trade {} with final volume = {}".format(self.waiting_trades[trade_id], lower_vol))
         else:
             # Seller waits for buyer to send table, sends fake table to hide selling
             fake_pall_pub, fake_pall_priv = paillier.generate_paillier_keypair()
@@ -385,8 +385,14 @@ class Client():
                 print("(seller) Sell is Greater")
 
 
-            print("CLIENT: (seller) Completed trade with final volume = {}".format(lower_vol))
-        time.sleep(10)
+            print("CLIENT: (seller) Completed trade {} with final volume = {}".format(self.waiting_trades[trade_id], lower_vol))
+
+        if lower_vol != 0:
+            msg = {'method': 'finish_trade', 'params': [trade_id]}
+            self.send_message(msg)
+            return
+
+        raise RuntimeError("Trade Matched, but not completed")
 
     def query_trades(self):
         """
@@ -400,9 +406,11 @@ class Client():
                 comp_cipher = data[1]
                 decrypted = self.pall_keys[other_pub_key][1].decrypt_encoded(comp_cipher).decode()
                 if decrypted == 0:
-                    print("CLIENT - Match found: {} <=> {}".format(trade_id, other_trade_id))
+                    print("CLIENT - Match found {}: {} <=> {}".format(self.waiting_trades[trade_id], trade_id, other_trade_id))
                     # Attempt to open channel through CA and compute volume
                     self.complete_trade(trade_id, other_trade_id, other_pub_key)
+                    del self.waiting_trades[trade_id]
+                    return
 
     def run_test_case(self, trades):
         """
@@ -421,7 +429,7 @@ class Client():
            # while cur_time - trade_time < TRADE_TEST_INTERVAL:
            #     self.query_trades()
            #     cur_time = time.clock()
-        while time.clock() - start_test_time < TEST_TIMEOUT:
+        while time.clock() - start_test_time < TEST_TIMEOUT and len(self.waiting_trades) > 0:
             self.query_trades()
             time.sleep(2)
 
