@@ -33,4 +33,12 @@ def auth_getvolumebits(volume):
     bit_str = '{0:0{size}b}'.format(abs(volume), size=VOLUME_NUM_BITS)
     return [int(bit_chr) for bit_chr in bit_str]
 
-
+def zero_encode(bits):
+    rbits = bits[::-1]
+    res = set()
+    for j in range(len(bits)):
+        if rbits[j] == 0:
+            x = rbits[len(bits)-1:j:-1]
+            x.append(1)
+            res.add(tuple(x))
+    return list(res)

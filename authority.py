@@ -13,6 +13,7 @@ import ast
 import pickle
 import sys
 from Crypto.Random import random
+import struct
 
 AVAIL_PORTS = range(8001, 8010)
 REGISTRATION_PERIOD_LEN = 5    # Time on key-refresh where new clients can join pool
@@ -36,7 +37,11 @@ class CARequestHandler(SimpleXMLRPCRequestHandler):
 
 class ClientHandler(mp.Process):
     def _send_message(self, message):
-        self.sock_client.send(pickle.dumps(message))
+        send_msg = pickle.dumps(message)
+        length = struct.pack('!I', len(send_msg))
+        send_msg = length + send_msg
+        self.sock.send(send_msg)
+        #self.sock_client.send(pickle.dumps(message))
 
     def _handle_msg(self, msg):
         if msg['type'] == 'refresh':
@@ -81,7 +86,7 @@ class ClientHandler(mp.Process):
         self.comm_qs[self.matched_pub].put({"type": "notify_vol", "data": cipher})
         if self.matched_items["notify_vol"] is not None:
             x = self.matched_items["notify_vol"]
-            self.matched_items["notify_col"] = None
+            self.matched_items["notify_vol"] = None
             return x
         return self._wait_item("notify_vol")
 
@@ -268,10 +273,19 @@ class ClientHandler(mp.Process):
                 self._handle_msg(msg)
                 
             # Receive message from client and attempt to parse it
-            b = self.sock_client.recv(15000)
-            if b == b'':
-                continue
-            msg = pickle.loads(b)
+            #b = self.sock_client.recv(15000)
+            buf = b''
+            while len(buf) < 4:
+                buf += self.sock_client.recv(4-len(buf))
+            length = struct.unpack('!I', buf)[0]
+            data = b''
+            while len(data) < length:
+                data += self.sock_client.recv(length - len(data))
+            msg = pickle.loads(data)
+
+            #if b == b'':
+            #    continue
+            #msg = pickle.loads(b)
             #print("SERVER: Recieved Message - " + str(msg))
             method = msg['method']
             params = msg['params']
@@ -296,9 +310,13 @@ class ClientHandler(mp.Process):
                 res = self._send_min_vol(*params)
             else:
                 res = AUTH_INVALID_METHOD_ERR
-
+            
+            print("SERVER: Returning = {}".format(res))
             resp_bytes = pickle.dumps(res)
+            length = struct.pack('!I', len(resp_bytes))
+            resp_bytes = length + resp_bytes
             self.sock_client.send(resp_bytes)
+            #self.sock_client.sendall(resp_bytes)
 
     def terminate(self):
         if self.sock_client is not None:

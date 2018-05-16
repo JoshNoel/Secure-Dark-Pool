@@ -12,6 +12,7 @@ import collections
 import ast
 import base64
 import pickle
+import struct
 
 class Client():
     def __init__(self, lambda_bits, server_name, server_rpc_port):
@@ -60,12 +61,22 @@ class Client():
         print("CLIENT: Sending Message - " + str(msg))
         send_msg = pickle.dumps(msg)
         print("DEBUG: Send Message Len = {}".format(len(send_msg)))
+        length = struct.pack('!I', len(send_msg))
+        send_msg = length + send_msg
         self.sock.send(send_msg)
        
         # Filters out trade responses received over socket
         message_resp_parsed = False
         while (not message_resp_parsed):
-            resp = pickle.loads(self.sock.recv(15000))
+            buf = b''
+            while len(buf) < 4:
+                buf += self.sock.recv(4-len(buf))
+            length = struct.unpack('!I', buf)[0]
+            data = b''
+            while len(data) < length:
+                data += self.sock.recv(length - len(data))
+            resp = pickle.loads(data)
+            #resp = pickle.loads(self.sock.recv(15000))
             print("CLIENT: Recieved Response - " + str(resp))
 
             # Check if error received
@@ -233,8 +244,8 @@ class Client():
     def generate_table(self, volume, pall_pub):
         volume_bits = auth_getvolumebits(volume)
         # Now make the table
-        enc_0 = pall_pub.encrypt(0)
-        enc_r = pall_pub.encrypt(random.randint(-pall_pub.n//3, pall_pub.n//3))
+        enc_0 = pall_pub.encrypt(paillier.EncodedNumber.encode(pall_pub, 0))
+        enc_r = pall_pub.encrypt(paillier.EncodedNumber.encode(pall_pub, random.randint(-pall_pub.n//3, pall_pub.n//3)))
 
         table = [[None]*VOLUME_NUM_BITS, [None]*VOLUME_NUM_BITS]
         for i in range(len(table)):
@@ -254,6 +265,7 @@ class Client():
 
         # Now create bit representation of trade volume
         volume = self.waiting_trades[trade_id]['amt'] #Note: Max volume checked during trade send
+        print("ORIG VOL: {}".format(volume))
         lower_vol = 0
         other_pub_key = construct(other_pub_key)
 
@@ -262,7 +274,7 @@ class Client():
             pall_pub, pall_priv = paillier.generate_paillier_keypair()
             table = self.generate_table(volume, pall_pub)
             #print("DEBUG: volume_bits = {}\n table = {}".format(volume_bits, table))
-            msg = {'method': 'send_table', 'params': [other_pub_key, (trade_id, other_trade_id), table]}
+            msg = {'method': 'send_table', 'params': [(other_pub_key.n, other_pub_key.e), (trade_id, other_trade_id), table]}
 
             # Wait to recieve dummy table
             print("DEBUG: Sending table")
@@ -270,7 +282,7 @@ class Client():
 
             # Send fake c vector
             print("DEBUG: Sending fake_c")
-            fake_c = [random.randint(-pall_pub.n, pall_pub.n) for i in range(VOLUME_NUM_BITS)]
+            fake_c = [pall_pub.encrypt(random.randint(-pall_pub.n//3, pall_pub.n//3)) for i in range(VOLUME_NUM_BITS)]
             msg = {'method':'send_c', 'params': [fake_c]}
 
             # Recieve real result vector
@@ -278,8 +290,16 @@ class Client():
            
             # Decrypt c vector
             greater = False
+            vals = []
             for i in range(VOLUME_NUM_BITS):
-                val = pall_priv.decrypt_encoded(c[i])
+                # In this case we don't care about overflow, only values that lead to 0
+                try:
+                    vals.append(pall_priv.decrypt_encoded(c[i]).decode())
+                except OverflowError as e:
+                    pass
+
+            print("DEBUG: vals = {}".format(vals))
+            for val in vals:
                 if val == 0:
                     greater = True
                     break
@@ -288,43 +308,61 @@ class Client():
             if greater == True:
                 # Buy > Sell (i.e. x > y)
                 # Send 0 to indicate that y should send the lower value
-                msg = {'method': 'notify_volume', 'params': [other_pub_key.encrypt(0)]}
-                lower_vol = self.send_message(msg)
+                msg = {'method': 'notify_volume', 'params': [other_pub_key.encrypt(0, None)[0]]}
+                self.send_message(msg)
+                print("Buy is greater")
             else:
                 # Send the lower value to the other client
-                msg = {'method': 'notify_volume', 'params': [other_pub_key.encrypt(volume)]}
+                msg = {'method': 'notify_volume', 'params': [other_pub_key.encrypt(volume, None)[0]]}
                 self.send_message(msg)
                 lower_vol = volume
+                print("Sell is greater")
 
             # Send fake volume notification
-            msg = {'method': 'send_min_volume', 'params': [other_pub_key.encrypt(volume)]}
+            msg = {'method': 'send_min_volume', 'params': [other_pub_key.encrypt(lower_vol, None)[0]]}
             resp = self.send_message(msg)
             if lower_vol == 0:
-                lower_vol = resp
+                lower_vol = self.rsa_priv.decrypt(resp)
 
+            print("CLIENT: (buyer) Completed trade with final volume = {}".format(lower_vol))
         else:
             # Seller waits for buyer to send table, sends fake table to hide selling
             fake_pall_pub, fake_pall_priv = paillier.generate_paillier_keypair()
             fake_table = self.generate_table(random.randint(-1000000, 1000000), fake_pall_pub)
-            msg = {'method': 'send_table', 'params': [other_pub_key, (trade_id, other_trade_id), fake_table]}
+            msg = {'method': 'send_table', 'params': [(other_pub_key.n, other_pub_key.e), (trade_id, other_trade_id), fake_table]}
 
             #Wait to recieve real table
             table = self.send_message(msg)
             pall_pub = table[0][0].public_key
 
             # Compute c vector
-            y_volume_bits = auth_getvolumebits(volume)
-            c = [None]*VOLUME_NUM_BITS
-            for i in range(VOLUME_NUM_BITS):
-                if y_volume_bits[i] == 0:
-                    val = table[1][i]
-                    k = random.randint(-pall_pub.n//3, pall_pub.n//3)
-                    for j in range(i+1, VOLUME_NUM_BITS):
-                        val += table[y_volume_bits[j]][j]
-                    val *= k
-                    c[i] = val
-                else:
-                    c[i] = random.randint(-pall_pub.n, pall_pub.n)
+            y_volume_bits = auth_getvolumebits(abs(volume))
+            c = []#[None]*VOLUME_NUM_BITS
+            zero_enc = zero_encode(y_volume_bits)
+            for t in zero_enc:
+                n = len(y_volume_bits)-1
+                x = None
+                k = paillier.EncodedNumber.encode(pall_pub, random.randint(-pall_pub.n//3, pall_pub.n//3))
+                for i in range(len(t)):
+                    if x is None:
+                        x = table[t[0]][i]
+                    else:
+                        x += table[t[i]][i]
+                c.append(x*k)
+
+            while len(c) < len(y_volume_bits):
+                c.append(pall_pub.encrypt(random.randint(-pall_pub.n//3, pall_pub.n//3)))
+
+            #for i in range(VOLUME_NUM_BITS):
+            #    if y_volume_bits[i] == 0:
+            #        val = table[1][i]
+            #        k = random.randint(-pall_pub.n//3, pall_pub.n//3)
+            #        for j in range(i+1, VOLUME_NUM_BITS):
+            #            val += table[y_volume_bits[j]][j]
+            #        val *= k
+            #        c[i] = val
+            #    else:
+            #        c[i] = pall_pub.encrypt(random.randint(-pall_pub.n//3, pall_pub.n//3))
 
             random.shuffle(c)
             
@@ -332,20 +370,23 @@ class Client():
             # Recieve fake c vector
             fake_c = self.send_message(msg)
             # Send fake volume notification to get response from other client
-            msg = {'method': 'notify_volume', 'params': [other_pub_key.encrypt(0)]}
-            lower_vol = self.rsa_priv.decrypt(self.send_message(msg))
-
+            msg = {'method': 'notify_volume', 'params': [other_pub_key.encrypt(0, None)[0]]}
+            buyer_notify = self.rsa_priv.decrypt(self.send_message(msg))
+            
             # Send minimum volume if we need to
-            if lower_vol == 0:
-                msg = {'method': 'send_min_volume', 'params': [other_pub_key.encrypt(volume)]}
-                lower_volume = volume
+            if buyer_notify == 0:
+                msg = {'method': 'send_min_volume', 'params': [other_pub_key.encrypt(abs(volume), None)[0]]}
+                lower_vol = abs(volume)
                 self.send_message(msg)
+                print("(seller) Buy is Greater")
             else:
-                msg = {'method': 'send_min_volume', 'params': [other_pub_key.encrypt(0)]}
-                self.send_message(msg)
+                msg = {'method': 'send_min_volume', 'params': [other_pub_key.encrypt(0, None)[0]]}
+                lower_vol = self.rsa_priv.decrypt(self.send_message(msg))
+                print("(seller) Sell is Greater")
 
 
-        print("CLIENT: Completed trade with final volume = {}".format(lower_vol))
+            print("CLIENT: (seller) Completed trade with final volume = {}".format(lower_vol))
+        time.sleep(10)
 
     def query_trades(self):
         """
