@@ -93,10 +93,12 @@ class Client():
 
     def register(self):
         # Need to send integers > 64-bits as strings
+        perf_time = time.clock()
         self.i, self.server_port, self.ticker_map = self.proxy.register(pickle.dumps((self.rsa_pub.publickey().n,
                                                                         self.rsa_pub.publickey().e)))
         if self.i < 0:
             raise RuntimeError(auth_geterror(self.i))
+        print("PERF: Reg time: {}".format(time.clock() - perf_time))
 
         # Get public key list from server
         while self.pub_keys is None:
@@ -123,10 +125,12 @@ class Client():
 
         # On connection server sends the public keys to generate pallier pairs for
         gen_pall_msg = pickle.loads(self.sock.recv(4096))
+        perf_time = time.clock()
         print("CLIENT: Pallier Gen Message Recv - " + str(gen_pall_msg))
         gen_pall_key_list = [tuple(l) for l in gen_pall_msg['params']]
         enc_pall_keys = self.generate_pal(gen_pall_key_list)
 
+        print("PERF: Paill Gen Time: {}".format(time.clock() - perf_time))
         # Send generated pallier key pairs to server
         post_pall_msg = {'method': 'post_pall_keys', 'params': [enc_pall_keys,]}
         self.send_message(post_pall_msg)
@@ -268,7 +272,7 @@ class Client():
         print("ORIG VOL: {}".format(volume))
         lower_vol = 0
         other_pub_key = construct(other_pub_key)
-
+        perf_time = time.clock()
         # Buyer initiates (i.e. volume > 0)
         if volume > 0:
             pall_pub, pall_priv = paillier.generate_paillier_keypair()
@@ -386,6 +390,7 @@ class Client():
 
 
             print("CLIENT: (seller) Completed trade {} with final volume = {}".format(self.waiting_trades[trade_id], lower_vol))
+            print("PERF: Volume Calc time: {}".format(time.clock() - perf_time))
 
         if lower_vol != 0:
             msg = {'method': 'finish_trade', 'params': [trade_id]}
@@ -408,6 +413,8 @@ class Client():
                 if decrypted == 0:
                     print("CLIENT - Match found {}: {} <=> {}".format(self.waiting_trades[trade_id], trade_id, other_trade_id))
                     # Attempt to open channel through CA and compute volume
+
+                    print("PERF: Match time: {}".format(time.clock() - self.perf_time))
                     self.complete_trade(trade_id, other_trade_id, other_pub_key)
                     del self.waiting_trades[trade_id]
                     return
@@ -422,6 +429,7 @@ class Client():
         TRADE_TEST_INTERVAL = 2
         print("TEST: trades = {}".format(trades))
         start_test_time = time.clock()
+        self.perf_time = time.clock()
         for trade in trades:
             if not self.send_trade(trade):
                 raise RuntimeError("CLIENT - Error sending trade: ".format(trade))

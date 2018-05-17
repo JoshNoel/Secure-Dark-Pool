@@ -52,8 +52,8 @@ if __name__ == "__main__":
     p_server.start()
 
     print("Instantiating Clients")
-    client_1 = ctx.Process(name="poll_rpc_client1", target=run_client, args=('trades_2_1.json',), daemon=True)
-    client_2 = ctx.Process(name="pool_rpc_client2", target=run_client, args=('trades_2_2.json',), daemon=True)
+    client_1 = ctx.Process(name="poll_rpc_client1", target=run_client, args=('trades_1_1.json',), daemon=True)
+    client_2 = ctx.Process(name="pool_rpc_client2", target=run_client, args=('trades_1_2.json',), daemon=True)
 
     print("Running Registration Test")
     client_1.start()
