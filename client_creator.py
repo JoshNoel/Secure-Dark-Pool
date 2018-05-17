@@ -248,11 +248,11 @@ class Client():
         volume_bits = auth_getvolumebits(volume)
         # Now make the table
         enc_0 = pall_pub.encrypt(paillier.EncodedNumber.encode(pall_pub, 0))
-        enc_r = pall_pub.encrypt(paillier.EncodedNumber.encode(pall_pub, random.randint(-pall_pub.n//3, pall_pub.n//3)))
 
         table = [[None]*VOLUME_NUM_BITS, [None]*VOLUME_NUM_BITS]
         for i in range(len(table)):
             for j in range(VOLUME_NUM_BITS):
+                enc_r = pall_pub.encrypt(paillier.EncodedNumber.encode(pall_pub, random.randint(-pall_pub.n//3, pall_pub.n//3)))
                 table[i][j] = enc_r
 
         for i,bit in enumerate(volume_bits):
